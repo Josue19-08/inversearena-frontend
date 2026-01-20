@@ -1,4 +1,5 @@
-# 🎮 INVERSE ARENA
+# <img width="1024" height="1536" alt="InverseLogo (1)" src="https://github.com/user-attachments/assets/d75a1127-d4d5-4e3c-8289-3e1379552bdb" />
+ INVERSE ARENA
 
 ## The RWA-Powered multiplayer blockchain elimination game where the minority wins. Built on the Stellar Network.
 
