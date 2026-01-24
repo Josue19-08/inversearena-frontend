@@ -1,10 +1,8 @@
-// src/features/wallet/types.ts
-
 export type WalletStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
 export interface WalletState {
   status: WalletStatus;
-  address: string | null;
+  publicKey: string | null;
   error: string | null;
 }
 

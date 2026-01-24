@@ -6,7 +6,7 @@ import { useWallet } from "@/features/wallet/useWallet";
 import { ConnectWalletButton } from "@/components/wallet/ConnectWalletButton";
 
 export function Sidebar() {
-  const { status, address } = useWallet();
+  const { status, publicKey } = useWallet();
 
   const shortenAddress = (addr: string) =>
     addr ? `${addr.slice(0, 6)}...${addr.slice(-4)}` : "";
@@ -38,7 +38,7 @@ export function Sidebar() {
 
             <div className="mt-3 flex items-center justify-between gap-3 rounded-md border border-white/10 bg-white/5 px-3 py-2">
               <div className="truncate text-sm font-semibold text-zinc-200">
-                {shortenAddress(address!)}
+                {shortenAddress(publicKey!)}
               </div>
             </div>
             <div className="mt-3">

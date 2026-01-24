@@ -9,14 +9,14 @@ const shortAddress = (address: string) => {
 }
 
 export const ConnectWalletButton = ({ className }: { className?: string }) => {
-  const { status, address, error, connect, disconnect } = useWallet();
+  const { status, publicKey, error, connect, disconnect } = useWallet();
 
   const buttonVariant = className ? 'none' : 'primary';
 
   if (status === 'connected') {
     return (
       <div className="flex items-center gap-4">
-        <span className='text-white'>{address ? shortAddress(address) : 'Connected'}</span>
+        <span className='text-white'>{publicKey ? shortAddress(publicKey) : 'Connected'}</span>
         <Button onClick={() => disconnect()} variant={buttonVariant} className={className}>Disconnect</Button>
       </div>
     );
@@ -33,7 +33,7 @@ export const ConnectWalletButton = ({ className }: { className?: string }) => {
 
   return (
     <Button onClick={() => connect()} disabled={status === 'connecting'} variant={buttonVariant} className={className}>
-      {status === 'connecting' ? 'Connecting...' : 'Connect_Wallet'}
+      {status === 'connecting' ? 'Connecting...' : 'Connect Wallet'}
     </Button>
   );
 };
