@@ -62,7 +62,16 @@ export function PoolCreationModal({
       ariaLabel="Pool Creation"
       className="max-w-[1000px]! bg-[#0F172A]! rounded-none! border-3 border-black"
     >
-      <div className="p-6 lg:p-8 font-display">
+      <div className="p-6 lg:p-8 font-display relative">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-6 right-6 lg:top-8 lg:right-8 size-10 flex items-center justify-center text-white hover:text-primary border-2 border-white/20 hover:border-primary transition-colors z-10"
+          aria-label="Close modal"
+        >
+          <span className="material-symbols-outlined text-2xl">close</span>
+        </button>
+
         <div className="mb-8">
           <h2 className="text-4xl lg:text-5xl font-black tracking-tighter uppercase leading-none mb-2 italic text-white">
             Pool Creation
