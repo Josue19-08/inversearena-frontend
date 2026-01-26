@@ -12,6 +12,13 @@ export default function Home() {
       <Navbar />
 
       <main className="flex-grow">
+  <Hero />
+  <Protocol />
+  <WhyInverse />
+  <YieldShowcase />
+  <BottomCta />
+</main>
+
         <Hero />
         <Protocol />
         <WhyInverse />
