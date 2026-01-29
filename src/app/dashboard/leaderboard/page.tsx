@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 "use client";
 
 import { useState, useCallback } from "react";
@@ -10,7 +9,7 @@ import {
 } from "@/features/leaderboard";
 
 const ITEMS_PER_PAGE = 4;
-=======
+
 const leaderboardStats = {
   totalYield: "$450,230",
   liveAgents: "1,204",
@@ -40,7 +39,6 @@ const podium = [
     highlight: false,
   },
 ];
->>>>>>> upstream/main
 
 export default function LeaderboardPage() {
   const [currentPage, setCurrentPage] = useState(1);
@@ -58,21 +56,9 @@ export default function LeaderboardPage() {
   }, []);
 
   return (
-<<<<<<< HEAD
-    <div className="flex flex-col gap-6">
-      <LeaderboardTable
-        survivors={paginatedSurvivors}
-        onChallenge={handleChallenge}
-      />
-
-      <Pagination
-        currentPage={currentPage}
-        totalPages={totalPages}
-        onPageChange={handlePageChange}
-      />
-=======
     <div className="flex min-h-[calc(100vh-48px)] flex-col gap-8">
-      <section className="relative w-full flex-1 overflow-hidden border border-[#0E1626] bg-[#0A101A] p-6 md:p-10">
+      {/* Header & Podium Section */}
+      <section className="relative w-full overflow-hidden border border-[#0E1626] bg-[#0A101A] p-6 md:p-10">
         <div className="absolute inset-0 bg-gradient-to-br from-[#0D182A] via-transparent to-transparent" />
 
         <div className="relative z-10 flex flex-col gap-6 lg:flex-row lg:items-start lg:justify-between">
@@ -200,7 +186,19 @@ export default function LeaderboardPage() {
           ))}
         </div>
       </section>
->>>>>>> upstream/main
+
+      {/* Rankings Table Section */}
+      <LeaderboardTable
+        survivors={paginatedSurvivors}
+        onChallenge={handleChallenge}
+      />
+
+      {/* Pagination */}
+      <Pagination
+        currentPage={currentPage}
+        totalPages={totalPages}
+        onPageChange={handlePageChange}
+      />
     </div>
   );
 }
