@@ -66,3 +66,31 @@ export function useArenaTimer({
       onTimeUp();
     }
   }, [initialSeconds, onTimeUp]);
+  // Timer control methods with stable references
+  const start = useCallback(() => {
+    if (isRunning) return;
+    
+    const now = Date.now();
+    startTimeRef.current = now - (initialSeconds - rawSeconds) * 1000;
+    lastUpdateRef.current = now;
+    setIsRunning(true);
+  }, [isRunning, initialSeconds, rawSeconds]);
+
+  const pause = useCallback(() => {
+    if (!isRunning) return;
+    
+    setIsRunning(false);
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+      intervalRef.current = null;
+    }
+  }, [isRunning]);
+
+  const resume = useCallback(() => {
+    if (isRunning) return;
+    
+    const now = Date.now();
+    startTimeRef.current = now - (initialSeconds - rawSeconds) * 1000;
+    lastUpdateRef.current = now;
+    setIsRunning(true);
+  }, [isRunning, initialSeconds, rawSeconds]);
