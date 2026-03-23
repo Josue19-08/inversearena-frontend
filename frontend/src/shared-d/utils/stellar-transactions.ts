@@ -26,6 +26,14 @@ import {
   STELLAR_NETWORK,
   TRANSACTION_CONFIG,
 } from "@/components/hook-d/arenaConstants";
+import {
+  ContractError,
+  ContractErrorCode,
+  parseContractError,
+} from "@/shared-d/utils/contract-error";
+
+// Re-export so consumers can import from one place
+export { ContractError, ContractErrorCode, parseContractError } from "@/shared-d/utils/contract-error";
 
 // Constants (Replace with real Contract IDs in production/env)
 export const FACTORY_CONTRACT_ID = STELLAR_NETWORK.CONTRACTS.FACTORY;
@@ -51,20 +59,27 @@ const CreatePoolParamsSchema = z.object({
 /**
  * Helper to get the latest sequence number for an account.
  */
-async function getAccount(publicKey: string): Promise<Account> {
-  const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+async function getAccount(publicKey: string, fn: string): Promise<Account> {
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
 
-  const res = await fetch(
-    `${HORIZON_URL}/accounts/${validatedPublicKey}`,
-  );
-  if (!res.ok) {
-    throw new Error("Account not found on network. Please fund it.");
+    const res = await fetch(
+      `${HORIZON_URL}/accounts/${validatedPublicKey}`,
+    );
+    if (!res.ok) {
+      throw new ContractError({
+        code: ContractErrorCode.ACCOUNT_NOT_FOUND,
+        fn,
+      });
+    }
+
+    const rawData: unknown = await res.json();
+    const data = HorizonAccountResponseSchema.parse(rawData);
+
+    return new Account(validatedPublicKey, data.sequence);
+  } catch (error) {
+    throw parseContractError(error, fn);
   }
-
-  const rawData: unknown = await res.json();
-  const data = HorizonAccountResponseSchema.parse(rawData);
-
-  return new Account(validatedPublicKey, data.sequence);
 }
 
 /**
@@ -79,42 +94,47 @@ export async function buildCreatePoolTransaction(
     arenaCapacity: number;
   },
 ) {
-  const validatedParams = CreatePoolParamsSchema.parse(params);
-  const account = await getAccount(publicKey);
-  const factory = new Contract(FACTORY_CONTRACT_ID);
+  const FN = "buildCreatePoolTransaction";
+  try {
+    const validatedParams = CreatePoolParamsSchema.parse(params);
+    const account = await getAccount(publicKey, FN);
+    const factory = new Contract(FACTORY_CONTRACT_ID);
 
-  // Convert stake amount to stroops/units (7 decimals).
-  const amountBigInt = BigInt(
-    Math.floor(validatedParams.stakeAmount * 10_000_000),
-  );
+    // Convert stake amount to stroops/units (7 decimals).
+    const amountBigInt = BigInt(
+      Math.floor(validatedParams.stakeAmount * 10_000_000),
+    );
 
-  const args = [
-    nativeToScVal(amountBigInt, { type: "i128" }),
-    new Contract(
-      validatedParams.currency === "USDC" ? USDC_CONTRACT_ID : XLM_CONTRACT_ID,
-    )
-      .address()
-      .toScVal(),
-    nativeToScVal(
-      validatedParams.roundSpeed === "30S"
-        ? 30
-        : validatedParams.roundSpeed === "1M"
-          ? 60
-          : 300,
-      { type: "u32" },
-    ),
-    nativeToScVal(validatedParams.arenaCapacity, { type: "u32" }),
-  ];
+    const args = [
+      nativeToScVal(amountBigInt, { type: "i128" }),
+      new Contract(
+        validatedParams.currency === "USDC" ? USDC_CONTRACT_ID : XLM_CONTRACT_ID,
+      )
+        .address()
+        .toScVal(),
+      nativeToScVal(
+        validatedParams.roundSpeed === "30S"
+          ? 30
+          : validatedParams.roundSpeed === "1M"
+            ? 60
+            : 300,
+        { type: "u32" },
+      ),
+      nativeToScVal(validatedParams.arenaCapacity, { type: "u32" }),
+    ];
 
-  const callOperation = factory.call("create_pool", ...args);
+    const callOperation = factory.call("create_pool", ...args);
 
-  return new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(callOperation)
-    .setTimeout(TimeoutInfinite)
-    .build();
+    return new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(callOperation)
+      .setTimeout(TimeoutInfinite)
+      .build();
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
 }
 
 /**
@@ -125,41 +145,49 @@ export async function buildStakeProtocolTransaction(
   publicKey: string,
   amount: number,
 ) {
-  const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
-  const validatedAmount = PositiveAmountSchema.parse(amount);
+  const FN = "buildStakeProtocolTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedAmount = PositiveAmountSchema.parse(amount);
 
-  if (
-    !STAKING_CONTRACT_ID ||
-    STAKING_CONTRACT_ID === STAKING_CONTRACT_PLACEHOLDER ||
-    STAKING_CONTRACT_ID.includes("...")
-  ) {
-    throw new Error(
-      "Staking contract not configured. Add NEXT_PUBLIC_STAKING_CONTRACT_ID to .env.local with your Soroban contract address.",
+    if (
+      !STAKING_CONTRACT_ID ||
+      STAKING_CONTRACT_ID === STAKING_CONTRACT_PLACEHOLDER ||
+      STAKING_CONTRACT_ID.includes("...")
+    ) {
+      throw new ContractError({
+        code: ContractErrorCode.CONFIG_MISSING,
+        message:
+          "Staking contract not configured. Add NEXT_PUBLIC_STAKING_CONTRACT_ID to .env.local with your Soroban contract address.",
+        fn: FN,
+      });
+    }
+
+    const server = new Server(SOROBAN_RPC_URL);
+    const account = await getAccount(validatedPublicKey, FN);
+    const stakingContract = new Contract(STAKING_CONTRACT_ID);
+
+    const amountStroops = BigInt(Math.floor(validatedAmount * 10_000_000));
+    const addressScVal = new Address(validatedPublicKey).toScVal();
+
+    const callOperation = stakingContract.call(
+      "stake",
+      addressScVal,
+      nativeToScVal(amountStroops, { type: "i128" }),
     );
+
+    const builtTx = new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(callOperation)
+      .setTimeout(TimeoutInfinite)
+      .build();
+
+    return server.prepareTransaction(builtTx);
+  } catch (error) {
+    throw parseContractError(error, FN);
   }
-
-  const server = new Server(SOROBAN_RPC_URL);
-  const account = await getAccount(validatedPublicKey);
-  const stakingContract = new Contract(STAKING_CONTRACT_ID);
-
-  const amountStroops = BigInt(Math.floor(validatedAmount * 10_000_000));
-  const addressScVal = new Address(validatedPublicKey).toScVal();
-
-  const callOperation = stakingContract.call(
-    "stake",
-    addressScVal,
-    nativeToScVal(amountStroops, { type: "i128" }),
-  );
-
-  const builtTx = new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(callOperation)
-    .setTimeout(TimeoutInfinite)
-    .build();
-
-  return server.prepareTransaction(builtTx);
 }
 
 /**
@@ -170,21 +198,26 @@ export async function buildJoinArenaTransaction(
   poolId: string,
   amount: number,
 ) {
-  const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
-  const validatedPoolId = StellarContractIdSchema.parse(poolId);
-  PositiveAmountSchema.parse(amount);
+  const FN = "buildJoinArenaTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    PositiveAmountSchema.parse(amount);
 
-  const account = await getAccount(validatedPublicKey);
-  const poolContract = new Contract(validatedPoolId);
-  const callOperation = poolContract.call("join");
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = new Contract(validatedPoolId);
+    const callOperation = poolContract.call("join");
 
-  return new TransactionBuilder(account, {
-    fee: TRANSACTION_CONFIG.JOIN_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(callOperation)
-    .setTimeout(TRANSACTION_CONFIG.TIMEOUT_SECONDS)
-    .build();
+    return new TransactionBuilder(account, {
+      fee: TRANSACTION_CONFIG.JOIN_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(callOperation)
+      .setTimeout(TRANSACTION_CONFIG.TIMEOUT_SECONDS)
+      .build();
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
 }
 
 /**
@@ -196,30 +229,35 @@ export async function buildSubmitChoiceTransaction(
   choice: "Heads" | "Tails",
   roundNumber: number,
 ) {
-  const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
-  const validatedPoolId = StellarContractIdSchema.parse(poolId);
-  const validatedChoice = RoundChoiceSchema.parse(choice);
-  const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
+  const FN = "buildSubmitChoiceTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
+    const validatedChoice = RoundChoiceSchema.parse(choice);
+    const validatedRoundNumber = RoundNumberSchema.parse(roundNumber);
 
-  const account = await getAccount(validatedPublicKey);
-  const poolContract = new Contract(validatedPoolId);
-  const choiceVal = xdr.ScVal.scvSymbol(
-    validatedChoice === "Heads" ? "Heads" : "Tails",
-  );
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = new Contract(validatedPoolId);
+    const choiceVal = xdr.ScVal.scvSymbol(
+      validatedChoice === "Heads" ? "Heads" : "Tails",
+    );
 
-  const callOperation = poolContract.call(
-    "submit_choice",
-    nativeToScVal(validatedRoundNumber, { type: "u32" }),
-    choiceVal,
-  );
+    const callOperation = poolContract.call(
+      "submit_choice",
+      nativeToScVal(validatedRoundNumber, { type: "u32" }),
+      choiceVal,
+    );
 
-  return new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(callOperation)
-    .setTimeout(TRANSACTION_CONFIG.TIMEOUT_SECONDS)
-    .build();
+    return new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(callOperation)
+      .setTimeout(TRANSACTION_CONFIG.TIMEOUT_SECONDS)
+      .build();
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
 }
 
 /**
@@ -229,26 +267,37 @@ export async function buildClaimWinningsTransaction(
   publicKey: string,
   poolId: string,
 ) {
-  const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
-  const validatedPoolId = StellarContractIdSchema.parse(poolId);
+  const FN = "buildClaimWinningsTransaction";
+  try {
+    const validatedPublicKey = StellarPublicKeySchema.parse(publicKey);
+    const validatedPoolId = StellarContractIdSchema.parse(poolId);
 
-  const account = await getAccount(validatedPublicKey);
-  const poolContract = new Contract(validatedPoolId);
-  const callOperation = poolContract.call("claim");
+    const account = await getAccount(validatedPublicKey, FN);
+    const poolContract = new Contract(validatedPoolId);
+    const callOperation = poolContract.call("claim");
 
-  return new TransactionBuilder(account, {
-    fee: BASE_FEE,
-    networkPassphrase: NETWORK_PASSPHRASE,
-  })
-    .addOperation(callOperation)
-    .setTimeout(30)
-    .build();
+    return new TransactionBuilder(account, {
+      fee: BASE_FEE,
+      networkPassphrase: NETWORK_PASSPHRASE,
+    })
+      .addOperation(callOperation)
+      .setTimeout(30)
+      .build();
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
 }
 
 /**
  * Parse Stellar error results to user-friendly messages.
+ * Now ContractError-aware: if the error is already a ContractError,
+ * returns its message directly.
  */
 export function parseStellarError(error: unknown): string {
+  if (error instanceof ContractError) {
+    return error.message;
+  }
+
   const errorString =
     error instanceof Error
       ? error.message
@@ -296,12 +345,13 @@ export async function fetchArenaState(
   arenaId: string,
   userAddress?: string
 ): Promise<ArenaStateResponse> {
-  const validatedArenaId = StellarContractIdSchema.parse(arenaId);
-  const validatedUserAddress = userAddress
-    ? StellarPublicKeySchema.parse(userAddress)
-    : undefined;
-
+  const FN = "fetchArenaState";
   try {
+    const validatedArenaId = StellarContractIdSchema.parse(arenaId);
+    const validatedUserAddress = userAddress
+      ? StellarPublicKeySchema.parse(userAddress)
+      : undefined;
+
     const server = new Server(SOROBAN_RPC_URL);
     const arenaContract = new Contract(validatedArenaId);
 
@@ -334,15 +384,17 @@ export async function fetchArenaState(
     ) {
       const errorMsg =
         "error" in stateSimulation ? stateSimulation.error : "Unknown error";
-      throw new Error(`Failed to fetch arena state: ${errorMsg}`);
+      throw new ContractError({
+        code: ContractErrorCode.SIMULATION_FAILED,
+        message: `Failed to fetch arena state: ${errorMsg}`,
+        fn: FN,
+      });
     }
 
     // Parse the contract response
-    // Adjust parsing based on your contract's return structure
     const stateData = stateSimulation.result.retval;
-    
+
     // Extract values from the contract response
-    // This assumes the contract returns a struct/map with these fields
     const survivorsCount = extractU32FromScVal(stateData, "survivors_count") || 0;
     const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
     const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
@@ -391,9 +443,7 @@ export async function fetchArenaState(
       roundNumber,
     };
   } catch (error) {
-    // Provide structured error handling
-    const errorMessage = parseStellarError(error);
-    throw new Error(`Arena state fetch failed: ${errorMessage}`);
+    throw parseContractError(error, FN);
   }
 }
 
@@ -405,7 +455,7 @@ function extractU32FromScVal(scVal: xdr.ScVal, fieldName?: string): number | nul
     if (fieldName && scVal.switch().name === "scvMap") {
       const map = scVal.map();
       if (!map) return null;
-      
+
       for (const entry of map) {
         const key = entry.key();
         if (key.switch().name === "scvSymbol" && key.sym().toString() === fieldName) {
@@ -417,7 +467,7 @@ function extractU32FromScVal(scVal: xdr.ScVal, fieldName?: string): number | nul
       }
       return null;
     }
-    
+
     if (scVal.switch().name === "scvU32") {
       return scVal.u32();
     }
@@ -435,7 +485,7 @@ function extractI128FromScVal(scVal: xdr.ScVal, fieldName?: string): number | nu
     if (fieldName && scVal.switch().name === "scvMap") {
       const map = scVal.map();
       if (!map) return null;
-      
+
       for (const entry of map) {
         const key = entry.key();
         if (key.switch().name === "scvSymbol" && key.sym().toString() === fieldName) {
@@ -452,7 +502,7 @@ function extractI128FromScVal(scVal: xdr.ScVal, fieldName?: string): number | nu
       }
       return null;
     }
-    
+
     if (scVal.switch().name === "scvI128") {
       const i128Parts = scVal.i128();
       const hi = i128Parts.hi().toBigInt();
@@ -474,7 +524,7 @@ function extractBoolFromScVal(scVal: xdr.ScVal, fieldName?: string): boolean | n
     if (fieldName && scVal.switch().name === "scvMap") {
       const map = scVal.map();
       if (!map) return null;
-      
+
       for (const entry of map) {
         const key = entry.key();
         if (key.switch().name === "scvSymbol" && key.sym().toString() === fieldName) {
@@ -486,7 +536,7 @@ function extractBoolFromScVal(scVal: xdr.ScVal, fieldName?: string): boolean | n
       }
       return null;
     }
-    
+
     if (scVal.switch().name === "scvBool") {
       return scVal.b();
     }
@@ -500,40 +550,60 @@ function extractBoolFromScVal(scVal: xdr.ScVal, fieldName?: string): boolean | n
  * Submit a signed transaction to the network.
  */
 export async function submitSignedTransaction(signedXdr: string) {
-  const validatedSignedXdr = SignedXdrSchema.parse(signedXdr);
-  const server = new Server(SOROBAN_RPC_URL);
+  const FN = "submitSignedTransaction";
+  try {
+    const validatedSignedXdr = SignedXdrSchema.parse(signedXdr);
+    const server = new Server(SOROBAN_RPC_URL);
 
-  const tx = TransactionBuilder.fromXDR(validatedSignedXdr, NETWORK_PASSPHRASE);
-  const response = await server.sendTransaction(tx);
+    const tx = TransactionBuilder.fromXDR(validatedSignedXdr, NETWORK_PASSPHRASE);
+    const response = await server.sendTransaction(tx);
 
-  if (response.status !== "PENDING") {
-    throw new Error(`Transaction failed: ${response.status}`);
-  }
-
-  const hash = response.hash;
-  let getTxResponse: Awaited<ReturnType<Server["getTransaction"]>> | undefined;
-
-  const MAX_RETRIES = TRANSACTION_CONFIG.MAX_RETRIES;
-  let retries = 0;
-
-  while (retries < MAX_RETRIES) {
-    await new Promise((resolve) =>
-      setTimeout(resolve, TRANSACTION_CONFIG.RETRY_INTERVAL_MS),
-    );
-    try {
-      getTxResponse = await server.getTransaction(hash);
-      if (getTxResponse.status !== "NOT_FOUND") {
-        break;
-      }
-    } catch {
-      // Ignore transient fetch failures while polling.
+    if (response.status !== "PENDING") {
+      throw new ContractError({
+        code: ContractErrorCode.TRANSACTION_FAILED,
+        message: `Transaction rejected by network: ${response.status}`,
+        fn: FN,
+      });
     }
-    retries++;
-  }
 
-  if (!getTxResponse || getTxResponse.status !== "SUCCESS") {
-    throw new Error(`Transaction validation failed: ${getTxResponse?.status}`);
-  }
+    const hash = response.hash;
+    let getTxResponse: Awaited<ReturnType<Server["getTransaction"]>> | undefined;
 
-  return getTxResponse;
+    const MAX_RETRIES = TRANSACTION_CONFIG.MAX_RETRIES;
+    let retries = 0;
+
+    while (retries < MAX_RETRIES) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, TRANSACTION_CONFIG.RETRY_INTERVAL_MS),
+      );
+      try {
+        getTxResponse = await server.getTransaction(hash);
+        if (getTxResponse.status !== "NOT_FOUND") {
+          break;
+        }
+      } catch {
+        // Ignore transient fetch failures while polling.
+      }
+      retries++;
+    }
+
+    if (!getTxResponse) {
+      throw new ContractError({
+        code: ContractErrorCode.TRANSACTION_TIMEOUT,
+        fn: FN,
+      });
+    }
+
+    if (getTxResponse.status !== "SUCCESS") {
+      throw new ContractError({
+        code: ContractErrorCode.TRANSACTION_FAILED,
+        message: `Transaction confirmation failed: ${getTxResponse.status}`,
+        fn: FN,
+      });
+    }
+
+    return getTxResponse;
+  } catch (error) {
+    throw parseContractError(error, FN);
+  }
 }
