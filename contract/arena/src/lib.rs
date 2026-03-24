@@ -193,10 +193,7 @@ impl ArenaContract {
 
     /// Return whether the contract is paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&PAUSED_KEY)
-            .unwrap_or(false)
+        env.storage().instance().get(&PAUSED_KEY).unwrap_or(false)
     }
 
     // ── Round state machine ──────────────────────────────────────────────────
@@ -264,7 +261,12 @@ impl ArenaContract {
     ///
     /// # Authorization
     /// Requires `player.require_auth()` — the transaction must be signed by `player`.
-    pub fn submit_choice(env: Env, player: Address, choice: Choice) -> Result<(), ArenaError> {
+    pub fn submit_choice(
+        env: Env,
+        player: Address,
+        round_number: u32,
+        choice: Choice,
+    ) -> Result<(), ArenaError> {
         require_not_paused(&env)?;
         env.storage()
             .instance()
@@ -274,6 +276,10 @@ impl ArenaContract {
         let mut round = get_round(&env)?;
         if !round.active {
             return Err(ArenaError::NoActiveRound);
+        }
+
+        if round_number != round.round_number {
+            return Err(ArenaError::RoundDeadlineOverflow);
         }
 
         let current_ledger = env.ledger().sequence();
@@ -407,10 +413,8 @@ impl ArenaContract {
             .instance()
             .set(&EXECUTE_AFTER_KEY, &execute_after);
 
-        env.events().publish(
-            (TOPIC_UPGRADE_PROPOSED,),
-            (new_wasm_hash, execute_after),
-        );
+        env.events()
+            .publish((TOPIC_UPGRADE_PROPOSED,), (new_wasm_hash, execute_after));
     }
 
     /// Execute a previously proposed upgrade after the 48-hour timelock.
@@ -431,7 +435,6 @@ impl ArenaContract {
     pub fn execute_upgrade(env: Env) {
         require_not_paused(&env).unwrap();
         let admin: Address = env
-        
             .storage()
             .instance()
             .get(&ADMIN_KEY)
@@ -461,8 +464,7 @@ impl ArenaContract {
         env.events()
             .publish((TOPIC_UPGRADE_EXECUTED,), new_wasm_hash.clone());
 
-        env.deployer()
-            .update_current_contract_wasm(new_wasm_hash);
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     /// Cancel a pending upgrade proposal. Admin-only.
