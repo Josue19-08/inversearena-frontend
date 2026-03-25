@@ -476,6 +476,37 @@ fn state_survives_expected_game_duration() {
     assert_eq!(client.get_choice(&1, &player), Some(Choice::Heads));
 }
 
+#[test]
+fn get_full_state_returns_combined_arena_and_user_state() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let client = create_client(&env);
+    let player = Address::generate(&env);
+
+    set_ledger_sequence(&env, 800);
+    client.init(&5);
+
+    client.join(&player, &10i128);
+    client.start_round();
+    client.submit_choice(&player, &1u32, &Choice::Heads);
+
+    let full = client.get_full_state(&player);
+    assert_eq!(full.round_number, 1);
+    assert_eq!(full.survivors_count, 1);
+    assert!(full.is_active);
+    assert!(!full.has_won);
+}
+
+#[test]
+fn get_full_state_requires_initialization() {
+    let env = Env::default();
+    let client = create_client(&env);
+    let player = Address::generate(&env);
+
+    let err = client.try_get_full_state(&player);
+    assert_eq!(err, Err(Ok(ArenaError::NotInitialized)));
+}
+
 // ── Upgrade mechanism tests ───────────────────────────────────────────────────
 
 #[test]

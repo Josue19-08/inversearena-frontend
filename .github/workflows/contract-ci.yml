@@ -22,6 +22,9 @@ jobs:
         with:
           targets: wasm32-unknown-unknown
 
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
       - name: Cache cargo registry
         uses: actions/cache@v4
         with:
@@ -41,17 +44,19 @@ jobs:
         working-directory: ./contract
         run: cargo test --workspace
 
-      - name: Build WASM release
-        working-directory: ./contract
-        run: cargo build --target wasm32-unknown-unknown --release --workspace
+      - name: Install Soroban CLI
+        run: cargo install --locked soroban-cli
 
-      - name: Upload WASM artifacts
+      - name: Optimize contract WASM and enforce size budget
+        working-directory: ./contract
+        run: ./scripts/optimize_and_check_wasm.sh
+
+      - name: Upload WASM size metrics
         uses: actions/upload-artifact@v4
         with:
-          name: wasm-artifacts
-          path: |
-            contract/target/wasm32-unknown-unknown/release/*.wasm
-          retention-days: 5
+          name: contract-wasm-size-metrics
+          path: contract/target/wasm-metrics/sizes.md
+          if-no-files-found: error
 
       - name: Build contract docs
         working-directory: ./contract

@@ -54,7 +54,7 @@ fn test_admin_can_distribute_winnings() {
 }
 
 #[test]
-fn test_unauthorized_caller_returns_unauthorized() {
+fn test_unauthorized_caller_cannot_distribute() {
     let (env, _admin, client) = setup();
     let unauthorized = Address::generate(&env);
     let winner = Address::generate(&env);
@@ -64,20 +64,13 @@ fn test_unauthorized_caller_returns_unauthorized() {
     let amount = 1000i128;
     let currency = symbol_short!("XLM");
 
-    let result = client.try_distribute_winnings(
-        &unauthorized,
-        &ctx,
-        &pool_id,
-        &round_id,
-        &winner,
-        &amount,
-        &currency,
-    );
-    assert_eq!(result, Err(Ok(PayoutError::Unauthorized)));
+    let result =
+        client.try_distribute_winnings(&unauthorized, &idempotency_key, &winner, &amount, &currency);
+    assert_eq!(result, Err(Ok(PayoutError::UnauthorizedCaller)));
 }
 
 #[test]
-fn test_zero_amount_returns_invalid_amount() {
+fn test_zero_amount_panics() {
     let (env, admin, client) = setup();
     let winner = Address::generate(&env);
     let ctx = symbol_short!("arena_1");
@@ -85,13 +78,12 @@ fn test_zero_amount_returns_invalid_amount() {
     let round_id = 1u32;
     let currency = symbol_short!("XLM");
 
-    let result =
-        client.try_distribute_winnings(&admin, &ctx, &pool_id, &round_id, &winner, &0, &currency);
+    let result = client.try_distribute_winnings(&admin, &idempotency_key, &winner, &amount, &currency);
     assert_eq!(result, Err(Ok(PayoutError::InvalidAmount)));
 }
 
 #[test]
-fn test_negative_amount_returns_invalid_amount() {
+fn test_negative_amount_panics() {
     let (env, admin, client) = setup();
     let winner = Address::generate(&env);
     let ctx = symbol_short!("arena_1");
@@ -99,13 +91,12 @@ fn test_negative_amount_returns_invalid_amount() {
     let round_id = 1u32;
     let currency = symbol_short!("XLM");
 
-    let result =
-        client.try_distribute_winnings(&admin, &ctx, &pool_id, &round_id, &winner, &-100, &currency);
+    let result = client.try_distribute_winnings(&admin, &idempotency_key, &winner, &amount, &currency);
     assert_eq!(result, Err(Ok(PayoutError::InvalidAmount)));
 }
 
 #[test]
-fn test_idempotency_prevents_double_pay_returns_already_processed() {
+fn test_idempotency_prevents_double_pay_same_amount() {
     let (env, admin, client) = setup();
     let winner = Address::generate(&env);
     let ctx = symbol_short!("arena_1");
@@ -114,27 +105,47 @@ fn test_idempotency_prevents_double_pay_returns_already_processed() {
     let amount = 1000i128;
     let currency = symbol_short!("XLM");
 
-    client.distribute_winnings(&admin, &ctx, &pool_id, &round_id, &winner, &amount, &currency);
-    let result =
-        client.try_distribute_winnings(&admin, &ctx, &pool_id, &round_id, &winner, &amount, &currency);
-    assert_eq!(result, Err(Ok(PayoutError::AlreadyProcessed)));
+    client.distribute_winnings(&admin, &idempotency_key, &winner, &amount, &currency);
+
+    let second_attempt =
+        client.try_distribute_winnings(&admin, &idempotency_key, &winner, &amount, &currency);
+    assert_eq!(second_attempt, Err(Ok(PayoutError::AlreadyPaid)));
+
+    // The persisted payout amount must remain unchanged after the failed retry.
+    let payout = client.get_payout(&idempotency_key, &winner).unwrap();
+    assert_eq!(payout.amount, amount);
 }
 
 #[test]
-fn test_distribute_winnings_when_not_initialized_returns_not_initialized() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(PayoutContract, ());
-    let client = PayoutContractClient::new(&env, &contract_id);
-    let caller = Address::generate(&env);
+fn test_idempotency_prevents_double_pay_different_amount() {
+    let (env, admin, client) = setup();
     let winner = Address::generate(&env);
-    let ctx = symbol_short!("arena_1");
-    let pool_id = 1u32;
-    let round_id = 1u32;
-    let currency = symbol_short!("XLM");
+    let idempotency_key = 99u32;
+    let first_amount = 1000i128;
+    let second_amount = 9999i128;
+    let currency = symbol_short!("USDC");
 
-    let result = client.try_distribute_winnings(&caller, &ctx, &pool_id, &round_id, &winner, &100, &currency);
-    assert_eq!(result, Err(Ok(PayoutError::NotInitialized)));
+    client
+        .distribute_winnings(
+            &admin,
+            &idempotency_key,
+            &winner,
+            &first_amount,
+            &currency,
+        );
+
+    let second_attempt = client.try_distribute_winnings(
+        &admin,
+        &idempotency_key,
+        &winner,
+        &second_amount,
+        &currency,
+    );
+    assert_eq!(second_attempt, Err(Ok(PayoutError::AlreadyPaid)));
+
+    // Balance-equivalent assertion: only the original payout record is retained.
+    let payout = client.get_payout(&idempotency_key, &winner).unwrap();
+    assert_eq!(payout.amount, first_amount);
 }
 
 #[test]

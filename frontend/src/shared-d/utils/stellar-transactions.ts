@@ -37,8 +37,7 @@ import {
 import {
   buildClaimCallOperation,
   buildCreatePoolCallOperation,
-  buildGetArenaStateCallOperation,
-  buildGetUserStateCallOperation,
+  buildGetFullStateCallOperation,
   buildJoinCallOperation,
   buildStakeCallOperation,
   buildSubmitChoiceCallOperation,
@@ -317,8 +316,14 @@ export async function fetchArenaState(
       "0",
     );
 
-    const getStateOperation =
-      buildGetArenaStateCallOperation(arenaContract);
+    const stateReaderAddress =
+      validatedUserAddress ||
+      "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+    const getStateOperation = buildGetFullStateCallOperation(
+      arenaContract,
+      stateReaderAddress,
+    );
     const stateTx = composeUnsignedTransaction(dummyAccount, {
       fee: getDefaultInvokeBaseFee(),
       networkPassphrase: NETWORK_PASSPHRASE,
@@ -343,36 +348,17 @@ export async function fetchArenaState(
       });
     }
 
-    const arenaState = parseArenaStateFromScVal(stateSimulation.result.retval);
-    const displayState = buildArenaDisplayState(arenaState);
-    let userState: UserState = {
-      active: false,
-      won: false,
-    };
+    const stateData = stateSimulation.result.retval;
 
-    if (validatedUserAddress) {
-      const userStateOperation = buildGetUserStateCallOperation(
-        arenaContract,
-        validatedUserAddress,
-      );
-
-      const userStateTx = composeUnsignedTransaction(dummyAccount, {
-        fee: getDefaultInvokeBaseFee(),
-        networkPassphrase: NETWORK_PASSPHRASE,
-        timeout: getShortTxTimeoutSeconds(),
-        operation: userStateOperation,
-      });
-
-      const userSimulation = await server.simulateTransaction(userStateTx);
-
-      if (
-        !("error" in userSimulation) &&
-        "result" in userSimulation &&
-        userSimulation.result?.retval
-      ) {
-        userState = parseUserStateFromScVal(userSimulation.result.retval);
-      }
-    }
+    const survivorsCount =
+      extractU32FromScVal(stateData, "survivors_count") || 0;
+    const maxCapacity = extractU32FromScVal(stateData, "max_capacity") || 0;
+    const roundNumber = extractU32FromScVal(stateData, "round_number") || 0;
+    const currentStake = extractI128FromScVal(stateData, "current_stake") || 0;
+    const potentialPayout =
+      extractI128FromScVal(stateData, "potential_payout") || 0;
+    const isUserIn = extractBoolFromScVal(stateData, "is_active") || false;
+    const hasWon = extractBoolFromScVal(stateData, "has_won") || false;
 
     return {
       arenaId: validatedArenaId,

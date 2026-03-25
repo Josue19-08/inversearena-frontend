@@ -118,19 +118,31 @@ pub struct RoundState {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct UserState {
-    pub active: bool,
-    pub won: bool,
+pub struct ArenaStateView {
+    pub survivors_count: u32,
+    pub max_capacity: u32,
+    pub round_number: u32,
+    pub current_stake: i128,
+    pub potential_payout: i128,
 }
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RoundResolution {
+pub struct UserStateView {
+    pub is_active: bool,
+    pub has_won: bool,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FullStateView {
+    pub survivors_count: u32,
+    pub max_capacity: u32,
     pub round_number: u32,
-    pub winning_choice: Choice,
-    pub survivors: u32,
-    pub eliminated: u32,
-    pub tied: bool,
+    pub current_stake: i128,
+    pub potential_payout: i128,
+    pub is_active: bool,
+    pub has_won: bool,
 }
 
 #[contracttype]
@@ -785,13 +797,44 @@ impl ArenaContract {
         storage(&env).get(&DataKey::Submission(round_number, player))
     }
 
-    pub fn get_user_state(env: Env, player: Address) -> UserState {
-        storage(&env)
-            .get(&DataKey::User(player))
-            .unwrap_or(UserState {
-                active: false,
-                won: false,
-            })
+    /// Return contract-level arena state for UI reads.
+    pub fn get_arena_state(env: Env) -> Result<ArenaStateView, ArenaError> {
+        let round = get_round(&env)?;
+        let prize_pool: i128 = env.storage().instance().get(&PRIZE_POOL_KEY).unwrap_or(0);
+
+        Ok(ArenaStateView {
+            // This contract currently tracks submissions for the active/latest round.
+            survivors_count: round.total_submissions,
+            // Capacity is not modeled in this contract yet.
+            max_capacity: 0,
+            round_number: round.round_number,
+            current_stake: prize_pool,
+            potential_payout: prize_pool,
+        })
+    }
+
+    /// Return user-level arena state for UI reads.
+    pub fn get_user_state(env: Env, player: Address) -> UserStateView {
+        let is_active = storage(&env).has(&DataKey::Survivor(player.clone()));
+        let has_won = storage(&env).has(&DataKey::PrizeClaimed(player));
+
+        UserStateView { is_active, has_won }
+    }
+
+    /// Return combined arena + user state in one read for RPC efficiency.
+    pub fn get_full_state(env: Env, player: Address) -> Result<FullStateView, ArenaError> {
+        let arena_state = Self::get_arena_state(env.clone())?;
+        let user_state = Self::get_user_state(env, player);
+
+        Ok(FullStateView {
+            survivors_count: arena_state.survivors_count,
+            max_capacity: arena_state.max_capacity,
+            round_number: arena_state.round_number,
+            current_stake: arena_state.current_stake,
+            potential_payout: arena_state.potential_payout,
+            is_active: user_state.is_active,
+            has_won: user_state.has_won,
+        })
     }
 
     pub fn claim(env: Env, winner: Address) -> Result<i128, ArenaError> {

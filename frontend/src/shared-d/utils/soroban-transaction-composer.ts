@@ -119,3 +119,13 @@ export function buildGetUserStateCallOperation(
     encodeAddress(userPublicKey),
   );
 }
+
+export function buildGetFullStateCallOperation(
+  arenaContract: Contract,
+  userPublicKey: string,
+): Operation {
+  return arenaContract.call(
+    "get_full_state",
+    encodeAddress(userPublicKey),
+  );
+}

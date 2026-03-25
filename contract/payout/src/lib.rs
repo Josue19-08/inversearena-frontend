@@ -1,7 +1,8 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractimpl, contracttype, symbol_short, Address, Env, Symbol,
+    contract, contracterror, contractimpl, contracttype, panic_with_error, symbol_short, Address,
+    Env, Symbol,
 };
 
 const ADMIN_KEY: Symbol = symbol_short!("ADMIN");
@@ -72,6 +73,15 @@ pub struct PayoutData {
     pub paid: bool,
 }
 
+#[contracterror]
+#[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
+#[repr(u32)]
+pub enum PayoutError {
+    UnauthorizedCaller = 1,
+    InvalidAmount = 2,
+    AlreadyPaid = 3,
+}
+
 #[contract]
 pub struct PayoutContract;
 
@@ -81,7 +91,7 @@ impl PayoutContract {
     ///
     /// # Authorization
     /// None — open to any caller.
-    pub fn hello(_env: Env) -> u32 {
+        pub fn hello(_env: Env) -> u32 {
         789
     }
 
@@ -207,16 +217,20 @@ impl PayoutContract {
         round_id: u32,
         winner: Address,
         amount: i128,
-        currency: Address,
+        currency: Symbol,
     ) -> Result<(), PayoutError> {
-        let admin = require_admin(&env)?;
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&ADMIN_KEY)
+            .expect("not initialized");
 
         if caller != admin {
-            return Err(PayoutError::Unauthorized);
+            panic_with_error!(&env, PayoutError::UnauthorizedCaller);
         }
 
         if amount <= 0 {
-            return Err(PayoutError::InvalidAmount);
+            panic_with_error!(&env, PayoutError::InvalidAmount);
         }
 
         let payout_key = DataKey::Payout(context, pool_id, round_id, winner.clone());
@@ -226,7 +240,7 @@ impl PayoutContract {
             .get::<_, PayoutData>(&payout_key)
             .is_some()
         {
-            return Err(PayoutError::AlreadyProcessed);
+            panic_with_error!(&env, PayoutError::AlreadyPaid);
         }
 
         let token_client = soroban_sdk::token::Client::new(&env, &currency);
@@ -241,7 +255,7 @@ impl PayoutContract {
         env.storage().instance().set(&payout_key, &payout_data);
 
         env.events()
-            .publish((TOPIC_PAYOUT_EXECUTED,), (EVENT_VERSION, winner, amount, currency));
+            .publish((TOPIC_PAYOUT_EXECUTED,), (winner, amount, currency));
 
         Ok(())
     }
