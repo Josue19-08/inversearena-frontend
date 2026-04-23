@@ -122,6 +122,8 @@ fn exported_functions_match_abi_snapshot() {
         "set_metadata",
         "get_metadata",
         "state",
+        "get_arena_state_view",
+        "init_factory",
     ];
 
     assert_eq!(

@@ -65,23 +65,46 @@ fn test_double_initialize_returns_already_initialized() {
 
 // ── whitelist management ───────────────────────────────────────────────────────
 
+/// Helper: inject an ArenaRef with a known host into factory storage.
+fn inject_arena_ref(env: &Env, contract_id: &Address, arena_id: u64, host: &Address) {
+    let fake_contract = Address::generate(env);
+    env.as_contract(contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::ArenaRef(arena_id),
+            &ArenaRef {
+                contract: fake_contract,
+                status: ArenaStatus::Pending,
+                host: host.clone(),
+            },
+        );
+    });
+}
+
 #[test]
 fn test_add_to_whitelist() {
     let (env, _admin, client) = setup();
     let host = Address::generate(&env);
-    assert!(!client.is_whitelisted(&host));
-    client.add_to_whitelist(&host);
-    assert!(client.is_whitelisted(&host));
+    let arena_id: u64 = 1;
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+
+    let player = Address::generate(&env);
+    assert!(!client.is_whitelisted(&arena_id, &player));
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(client.is_whitelisted(&arena_id, &player));
 }
 
 #[test]
 fn test_remove_from_whitelist() {
     let (env, _admin, client) = setup();
     let host = Address::generate(&env);
-    client.add_to_whitelist(&host);
-    assert!(client.is_whitelisted(&host));
-    client.remove_from_whitelist(&host);
-    assert!(!client.is_whitelisted(&host));
+    let arena_id: u64 = 2;
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+
+    let player = Address::generate(&env);
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(client.is_whitelisted(&arena_id, &player));
+    client.remove_from_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(!client.is_whitelisted(&arena_id, &player));
 }
 
 #[test]
@@ -90,7 +113,7 @@ fn test_is_whitelisted_when_not_initialized_returns_not_initialized() {
     let contract_id = env.register(FactoryContract, ());
     let client = FactoryContractClient::new(&env, &contract_id);
     let host = Address::generate(&env);
-    let result = client.try_is_whitelisted(&host);
+    let result = client.try_is_whitelisted(&0u64, &host);
     assert_eq!(result, Ok(Ok(false)));
 }
 
@@ -154,20 +177,21 @@ fn test_admin_can_create_pool() {
     client.set_arena_wasm_hash(&wasm_hash);
     let stake = MIN_STAKE + 1_000_000;
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &stake, &currency, &10u32, &8u32);
+    client.create_pool(&admin, &stake, &currency, &10u32, &8u32, &false);
 }
 
 #[test]
 fn test_whitelisted_host_can_create_pool() {
     let (env, _admin, client) = setup();
     let host = Address::generate(&env);
-    client.add_to_whitelist(&host);
+    // Use add_host_to_whitelist (protocol-level host whitelist) to allow pool creation.
+    client.add_host_to_whitelist(&host);
 
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
     let stake = MIN_STAKE + 1_000_000;
     let currency = supported_currency(&env, &client);
-    client.create_pool(&host, &stake, &currency, &10u32, &8u32);
+    client.create_pool(&host, &stake, &currency, &10u32, &8u32, &false);
 }
 
 #[test]
@@ -178,7 +202,7 @@ fn test_unauthorized_caller_returns_unauthorized() {
     let unauthorized = Address::generate(&env);
     let stake = MIN_STAKE + 1_000_000;
     let currency = Address::generate(&env);
-    let result = client.try_create_pool(&unauthorized, &stake, &currency, &10u32, &8u32);
+    let result = client.try_create_pool(&unauthorized, &stake, &currency, &10u32, &8u32, &false);
     assert_eq!(result, Err(Ok(Error::Unauthorized)));
 }
 
@@ -200,7 +224,8 @@ fn test_create_pool_allows_whitelisted_host_in_mock_auth_env() {
     let client = FactoryContractClient::new(env_static, &contract_id);
 
     let host = Address::generate(&env);
-    client.add_to_whitelist(&host);
+    // Use add_host_to_whitelist (protocol-level host whitelist) to allow pool creation.
+    client.add_host_to_whitelist(&host);
 
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
@@ -208,7 +233,7 @@ fn test_create_pool_allows_whitelisted_host_in_mock_auth_env() {
     let stake = MIN_STAKE + 1_000_000;
     let currency = Address::generate(&env);
     client.add_supported_token(&currency);
-    let result = client.try_create_pool(&host, &stake, &currency, &10u32, &8u32);
+    let result = client.try_create_pool(&host, &stake, &currency, &10u32, &8u32, &false);
 
     assert!(result.is_ok());
 }
@@ -221,7 +246,7 @@ fn test_create_pool_with_stake_equal_to_minimum_succeeds() {
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
 }
 
 #[test]
@@ -231,7 +256,7 @@ fn test_create_pool_with_stake_below_minimum_returns_stake_below_minimum() {
     client.set_arena_wasm_hash(&wasm_hash);
     let stake = MIN_STAKE - 1;
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &stake, &currency, &10u32, &8u32);
+    let result = client.try_create_pool(&admin, &stake, &currency, &10u32, &8u32, &false);
     assert_eq!(result, Err(Ok(Error::StakeBelowMinimum)));
 }
 
@@ -241,7 +266,7 @@ fn test_create_pool_with_zero_stake_returns_invalid_stake_amount() {
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &0, &currency, &10u32, &8u32);
+    let result = client.try_create_pool(&admin, &0, &currency, &10u32, &8u32, &false);
     assert_eq!(result, Err(Ok(Error::InvalidStakeAmount)));
 }
 
@@ -251,7 +276,7 @@ fn test_create_pool_with_negative_stake_returns_invalid_stake_amount() {
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &-1000, &currency, &10u32, &8u32);
+    let result = client.try_create_pool(&admin, &-1000, &currency, &10u32, &8u32, &false);
     assert_eq!(result, Err(Ok(Error::InvalidStakeAmount)));
 }
 
@@ -260,7 +285,7 @@ fn test_create_pool_without_wasm_hash_returns_wasm_hash_not_set() {
     let (env, admin, client) = setup();
     let stake = MIN_STAKE + 1_000_000;
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &stake, &currency, &10u32, &8u32);
+    let result = client.try_create_pool(&admin, &stake, &currency, &10u32, &8u32, &false);
     assert_eq!(result, Err(Ok(Error::WasmHashNotSet)));
 }
 
@@ -271,7 +296,7 @@ fn test_create_pool_with_capacity_one_returns_invalid_capacity() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &1u32);
+    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &1u32, &false);
     assert_eq!(result, Err(Ok(Error::InvalidCapacity)));
 }
 
@@ -280,7 +305,7 @@ fn test_create_pool_with_capacity_two_succeeds() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &2u32);
+    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &2u32, &false);
 }
 
 #[test]
@@ -288,7 +313,7 @@ fn test_create_pool_with_max_capacity_succeeds() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &MAX_CAPACITY);
+    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &MAX_CAPACITY, &false);
 }
 
 #[test]
@@ -296,7 +321,7 @@ fn test_create_pool_with_zero_capacity_returns_invalid_capacity() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &0u32);
+    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &0u32, &false);
     assert_eq!(result, Err(Ok(Error::InvalidCapacity)));
 }
 
@@ -305,7 +330,7 @@ fn test_create_pool_exceeding_max_capacity_returns_invalid_capacity() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &(MAX_CAPACITY + 1));
+    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &(MAX_CAPACITY + 1), &false);
     assert_eq!(result, Err(Ok(Error::InvalidCapacity)));
 }
 
@@ -316,8 +341,8 @@ fn test_create_pool_increments_id() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    let pool1 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
-    let pool2 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    let pool1 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
+    let pool2 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
     assert_ne!(pool1, pool2);
 }
 
@@ -332,7 +357,7 @@ fn test_create_pool_deploys_interactive_arena() {
     let currency = supported_currency(&env, &client);
     let round_speed = 10u32;
 
-    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &round_speed, &8u32);
+    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &round_speed, &8u32, &false);
 
     // Wrap the returned address in an ArenaContractClient and call it.
     let env_s: &'static Env = unsafe { &*(&env as *const Env) };
@@ -354,7 +379,7 @@ fn create_pool_arena_is_immediately_joinable() {
     let token = StellarAssetClient::new(&env, &currency);
     client.add_supported_token(&currency);
 
-    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
 
     let env_s: &'static Env = unsafe { &*(&env as *const Env) };
     let arena = ArenaContractClient::new(env_s, &arena_addr);
@@ -374,8 +399,8 @@ fn test_create_pool_two_pools_have_independent_state() {
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
 
-    let addr1 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
-    let addr2 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    let addr1 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
+    let addr2 = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
     assert_ne!(addr1, addr2);
 
     let env_s: &'static Env = unsafe { &*(&env as *const Env) };
@@ -394,7 +419,7 @@ fn create_pool_metadata_not_visible_before_full_init() {
     let currency = supported_currency(&env, &client);
 
     // round_speed = 0 makes arena.init fail; metadata must not become visible.
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &0u32, &8u32);
+    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &0u32, &8u32, &false);
     assert!(result.is_err());
 
     assert!(client.get_arena(&0u32).is_none());
@@ -651,11 +676,24 @@ fn test_unauthorized_whitelist_panics() {
     let contract_id = env.register(FactoryContract, ());
     let client = FactoryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let known_host = Address::generate(&env);
+    let fake_contract = Address::generate(&env);
     env.as_contract(&contract_id, || {
         env.storage().instance().set(&ADMIN_KEY, &admin);
+        // Inject an ArenaRef so the lookup succeeds and auth is checked.
+        env.storage().persistent().set(
+            &DataKey::ArenaRef(0u64),
+            &ArenaRef {
+                contract: fake_contract,
+                status: ArenaStatus::Pending,
+                host: known_host.clone(),
+            },
+        );
     });
-    assert_auth_err(client.try_add_to_whitelist(&Address::generate(&env)));
-    assert_auth_err(client.try_remove_from_whitelist(&Address::generate(&env)));
+    // An attacker (not the host) must fail auth on add_to_whitelist.
+    assert_auth_err(client.try_add_to_whitelist(&0u64, &soroban_sdk::vec![&env, Address::generate(&env)]));
+    // And on remove_from_whitelist.
+    assert_auth_err(client.try_remove_from_whitelist(&0u64, &soroban_sdk::vec![&env, Address::generate(&env)]));
 }
 
 #[test]
@@ -713,7 +751,7 @@ fn test_get_arena() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32);
+    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32, &false);
 
     let arena = client.get_arena(&0u32).unwrap();
     assert_eq!(arena.pool_id, 0);
@@ -729,7 +767,7 @@ fn test_get_arenas_pagination() {
     let currency = supported_currency(&env, &client);
 
     for _ in 0..5 {
-        client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32);
+        client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32, &false);
     }
 
     let all = client.get_arenas(&0u32, &10u32);
@@ -868,7 +906,7 @@ fn test_create_pool_rejects_unsupported_token() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = Address::generate(&env); // not added via add_supported_token
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
     assert_eq!(result, Err(Ok(Error::UnsupportedToken)));
 }
 
@@ -877,7 +915,7 @@ fn test_create_pool_succeeds_after_token_added() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
 }
 
 #[test]
@@ -887,7 +925,7 @@ fn test_create_pool_fails_after_token_removed() {
     let currency = Address::generate(&env);
     client.add_supported_token(&currency);
     client.remove_supported_token(&currency);
-    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32);
+    let result = client.try_create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
     assert_eq!(result, Err(Ok(Error::UnsupportedToken)));
 }
 
@@ -1028,7 +1066,7 @@ fn read_functions_unaffected_by_factory_pause() {
     let (env, admin, client) = setup();
     client.pause();
     assert_eq!(client.admin(), admin);
-    assert!(!client.is_whitelisted(&Address::generate(&env)));
+    assert!(!client.is_whitelisted(&0u64, &Address::generate(&env)));
     assert_eq!(client.get_min_stake(), MIN_STAKE);
     assert!(client.is_paused());
 }
@@ -1056,7 +1094,7 @@ fn test_update_arena_status_success_and_auth() {
     let currency = supported_currency(&env, &client);
     
     // Create pool will internally call set_arena_metadata, setting status to Pending
-    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32);
+    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32, &false);
     
     // We must call set_arena_metadata to initialize the ArenaRef mapping
     env.mock_all_auths_allowing_non_root_auth();
@@ -1109,6 +1147,7 @@ fn test_update_arena_status_unauthorized() {
             &crate::ArenaRef {
                 contract: arena_addr.clone(),
                 status: crate::ArenaStatus::Pending,
+                host: Address::generate(&env),
             },
         );
     });
@@ -1117,4 +1156,308 @@ fn test_update_arena_status_unauthorized() {
     // This should fail because update_arena_status requires arena_addr.require_auth().
     let result = client.try_update_arena_status(&0u64, &crate::ArenaStatus::Active);
     assert_auth_err(result);
+}
+
+// ── Issue #448: private arena whitelist ──────────────────────────────────────
+
+/// Helper: create a pool, call set_arena_metadata, and return the arena address
+/// plus the host address.
+fn setup_private_arena(
+    env: &Env,
+    client: &FactoryContractClient<'static>,
+) -> (Address, Address, u64) {
+    let host = Address::generate(env);
+    client.add_host_to_whitelist(&host);
+    client.set_arena_wasm_hash(&dummy_hash(env));
+    let currency = supported_currency(env, client);
+
+    let arena_addr = client.create_pool(&host, &MIN_STAKE, &currency, &10u32, &8u32, &true);
+
+    let arena_id: u64 = 42;
+    let name = soroban_sdk::String::from_str(env, "Private Arena");
+
+    // Call set_metadata directly on the arena (host is admin after create_pool).
+    let env_s: &'static Env = unsafe { &*(env as *const Env) };
+    let arena = ArenaContractClient::new(env_s, &arena_addr);
+    arena.set_metadata(&arena_id, &name, &None, &host);
+
+    // Register the ArenaRef in the factory so whitelist calls can find the host.
+    inject_arena_ref(env, &client.address, arena_id, &host);
+
+    (arena_addr, host, arena_id)
+}
+
+// AC: Only host can add to whitelist
+#[test]
+fn test_only_host_can_add_to_whitelist() {
+    let (env, _admin, client) = setup();
+    let host = Address::generate(&env);
+    let arena_id: u64 = 100;
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+
+    let player = Address::generate(&env);
+
+    // With mock_all_auths the host auth is satisfied — should succeed.
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(client.is_whitelisted(&arena_id, &player));
+
+    // Without mocked auth, a non-host caller must fail.
+    let env2 = Env::default();
+    let contract_id2 = env2.register(FactoryContract, ());
+    let client2 = FactoryContractClient::new(&env2, &contract_id2);
+    let admin2 = Address::generate(&env2);
+    // Only mock auth for initialize so the contract is set up.
+    env2.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id2,
+            fn_name: "initialize",
+            args: soroban_sdk::vec![&env2, admin2.clone().into_val(&env2)].into(),
+            sub_invokes: &[],
+        },
+    }]);
+    client2.initialize(&admin2);
+
+    // Inject an ArenaRef with a known host directly into storage.
+    let known_host = Address::generate(&env2);
+    let fake_arena = Address::generate(&env2);
+    env2.as_contract(&contract_id2, || {
+        env2.storage().persistent().set(
+            &DataKey::ArenaRef(99u64),
+            &ArenaRef {
+                contract: fake_arena,
+                status: ArenaStatus::Pending,
+                host: known_host.clone(),
+            },
+        );
+    });
+
+    // An attacker (not the host) tries to add themselves — must fail auth.
+    let attacker = Address::generate(&env2);
+    let result = client2.try_add_to_whitelist(
+        &99u64,
+        &soroban_sdk::vec![&env2, attacker.clone()],
+    );
+    assert_auth_err(result);
+}
+
+// AC: Only host can remove from whitelist
+#[test]
+fn test_only_host_can_remove_from_whitelist() {
+    let (env, _admin, client) = setup();
+    let host = Address::generate(&env);
+    let arena_id: u64 = 101;
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+
+    let player = Address::generate(&env);
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(client.is_whitelisted(&arena_id, &player));
+
+    client.remove_from_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(!client.is_whitelisted(&arena_id, &player));
+
+    // Non-host attacker must fail auth.
+    let env2 = Env::default();
+    let contract_id2 = env2.register(FactoryContract, ());
+    let client2 = FactoryContractClient::new(&env2, &contract_id2);
+    let admin2 = Address::generate(&env2);
+    env2.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &contract_id2,
+            fn_name: "initialize",
+            args: soroban_sdk::vec![&env2, admin2.clone().into_val(&env2)].into(),
+            sub_invokes: &[],
+        },
+    }]);
+    client2.initialize(&admin2);
+
+    let known_host = Address::generate(&env2);
+    let fake_arena = Address::generate(&env2);
+    env2.as_contract(&contract_id2, || {
+        env2.storage().persistent().set(
+            &DataKey::ArenaRef(99u64),
+            &ArenaRef {
+                contract: fake_arena,
+                status: ArenaStatus::Pending,
+                host: known_host.clone(),
+            },
+        );
+    });
+
+    let attacker = Address::generate(&env2);
+    let result = client2.try_remove_from_whitelist(
+        &99u64,
+        &soroban_sdk::vec![&env2, attacker.clone()],
+    );
+    assert_auth_err(result);
+}
+
+// AC: add/remove on unknown arena_id returns ArenaNotFound
+#[test]
+fn test_whitelist_unknown_arena_returns_not_found() {
+    let (env, _admin, client) = setup();
+    let player = Address::generate(&env);
+    let result = client.try_add_to_whitelist(
+        &9999u64,
+        &soroban_sdk::vec![&env, player.clone()],
+    );
+    assert_eq!(result, Err(Ok(Error::ArenaNotFound)));
+
+    let result2 = client.try_remove_from_whitelist(
+        &9999u64,
+        &soroban_sdk::vec![&env, player.clone()],
+    );
+    assert_eq!(result2, Err(Ok(Error::ArenaNotFound)));
+}
+
+// AC: is_whitelisted returns false for unknown arena / unknown player
+#[test]
+fn test_is_whitelisted_returns_false_for_unknown() {
+    let (env, _admin, client) = setup();
+    let player = Address::generate(&env);
+    assert!(!client.is_whitelisted(&9999u64, &player));
+}
+
+// AC: Public arenas bypass whitelist check entirely
+#[test]
+fn test_public_arena_join_bypasses_whitelist() {
+    let (env, admin, client) = setup();
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+
+    let token_admin = Address::generate(&env);
+    let currency = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = soroban_sdk::token::StellarAssetClient::new(&env, &currency);
+    client.add_supported_token(&currency);
+
+    // Create a PUBLIC arena (is_private = false).
+    let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &8u32, &false);
+
+    let env_s: &'static Env = unsafe { &*(&env as *const Env) };
+    let arena = ArenaContractClient::new(env_s, &arena_addr);
+
+    // Any player can join without being whitelisted.
+    let player = Address::generate(&env);
+    token.mint(&player, &(MIN_STAKE * 2));
+    assert!(arena.try_join(&player, &MIN_STAKE).is_ok());
+}
+
+// AC: Private arena join succeeds for whitelisted player
+#[test]
+fn test_private_arena_join_succeeds_for_whitelisted_player() {
+    let (env, _admin, client) = setup();
+
+    // Create a real SAC token so the arena can process transfers.
+    let token_admin = Address::generate(&env);
+    let currency = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = soroban_sdk::token::StellarAssetClient::new(&env, &currency);
+    client.add_supported_token(&currency);
+
+    let host = Address::generate(&env);
+    client.add_host_to_whitelist(&host);
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+
+    let arena_addr = client.create_pool(&host, &MIN_STAKE, &currency, &10u32, &8u32, &true);
+
+    let arena_id: u64 = 42;
+    let name = soroban_sdk::String::from_str(&env, "Private Arena");
+    let env_s: &'static Env = unsafe { &*(&env as *const Env) };
+    let arena = ArenaContractClient::new(env_s, &arena_addr);
+    arena.set_metadata(&arena_id, &name, &None, &host);
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+
+    let player = Address::generate(&env);
+    token.mint(&player, &(MIN_STAKE * 2));
+
+    // Whitelist the player.
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(client.is_whitelisted(&arena_id, &player));
+
+    // Whitelisted player can join.
+    assert!(arena.try_join(&player, &MIN_STAKE).is_ok());
+}
+
+// AC: Private arena join blocked for non-whitelisted player (NotWhitelisted)
+#[test]
+fn test_private_arena_join_blocked_for_non_whitelisted_player() {
+    let (env, _admin, client) = setup();
+
+    let token_admin = Address::generate(&env);
+    let currency = env
+        .register_stellar_asset_contract_v2(token_admin.clone())
+        .address();
+    let token = soroban_sdk::token::StellarAssetClient::new(&env, &currency);
+    client.add_supported_token(&currency);
+
+    let host = Address::generate(&env);
+    client.add_host_to_whitelist(&host);
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+
+    let arena_addr = client.create_pool(&host, &MIN_STAKE, &currency, &10u32, &8u32, &true);
+
+    let arena_id: u64 = 42;
+    let name = soroban_sdk::String::from_str(&env, "Private Arena");
+    let env_s: &'static Env = unsafe { &*(&env as *const Env) };
+    let arena = ArenaContractClient::new(env_s, &arena_addr);
+    arena.set_metadata(&arena_id, &name, &None, &host);
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+
+    let player = Address::generate(&env);
+    token.mint(&player, &(MIN_STAKE * 2));
+
+    // Player is NOT whitelisted — join must be rejected.
+    let result = arena.try_join(&player, &MIN_STAKE);
+    assert!(result.is_err(), "non-whitelisted player must not join private arena");
+}
+
+// AC: Whitelist add emits event
+#[test]
+fn test_add_to_whitelist_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client) = setup();
+    let host = Address::generate(&env);
+    let arena_id: u64 = 55;
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+    let player = Address::generate(&env);
+
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+
+    // Verify the AWL_ADD event was emitted.
+    let events = env.events().all();
+    let has_wl_add = events.iter().any(|(_contract, topics, _data)| {
+        topics.iter().any(|t| {
+            let s: soroban_sdk::Symbol = t.into_val(&env);
+            s == soroban_sdk::symbol_short!("AWL_ADD")
+        })
+    });
+    assert!(has_wl_add, "add_to_whitelist must emit an AWL_ADD event");
+}
+
+// AC: Whitelist remove emits event
+#[test]
+fn test_remove_from_whitelist_emits_event() {
+    use soroban_sdk::testutils::Events as _;
+
+    let (env, _admin, client) = setup();
+    let host = Address::generate(&env);
+    let arena_id: u64 = 56;
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+    let player = Address::generate(&env);
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    client.remove_from_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+
+    // Verify the AWL_REM event was emitted.
+    let events = env.events().all();
+    let has_wl_rem = events.iter().any(|(_contract, topics, _data)| {
+        topics.iter().any(|t| {
+            let s: soroban_sdk::Symbol = t.into_val(&env);
+            s == soroban_sdk::symbol_short!("AWL_REM")
+        })
+    });
+    assert!(has_wl_rem, "remove_from_whitelist must emit an AWL_REM event");
 }

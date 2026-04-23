@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, BytesN, Env, IntoVal, String, Symbol, contract, contracterror, contractimpl,
+    Address, BytesN, Env, IntoVal, String, Symbol, Vec, contract, contracterror, contractimpl,
     contracttype, symbol_short, xdr::ToXdr,
 };
 
@@ -30,6 +30,7 @@ pub struct ArenaMetadata {
     pub creator: Address,
     pub capacity: u32,
     pub stake_amount: i128,
+    pub is_private: bool,
 }
 
 #[contracttype]
@@ -46,6 +47,7 @@ pub enum ArenaStatus {
 pub struct ArenaRef {
     pub contract: Address,
     pub status: ArenaStatus,
+    pub host: Address,
 }
 
 // ── Capacity limits ───────────────────────────────────────────────────────────
@@ -59,6 +61,7 @@ pub enum DataKey {
     SupportedToken(Address),
     Pool(u32),
     ArenaRef(u64),
+    ArenaWhitelist(u64, Address),
 }
 
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
@@ -84,6 +87,8 @@ const TOPIC_TOKEN_REMOVED: Symbol = symbol_short!("TOK_REM");
 const TOPIC_MIN_STAKE_UPDATED: Symbol = symbol_short!("MIN_UP");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
+const TOPIC_ARENA_WL_ADD: Symbol = symbol_short!("AWL_ADD");
+const TOPIC_ARENA_WL_REM: Symbol = symbol_short!("AWL_REM");
 
 /// Event payload version. Include in every event data tuple so consumers
 /// can detect schema changes without re-deploying indexers.
@@ -131,6 +136,8 @@ pub enum Error {
     Paused = 15,
     /// The requested arena was not found.
     ArenaNotFound = 16,
+    /// Player is not on the whitelist for a private arena.
+    NotWhitelisted = 17,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -262,7 +269,7 @@ impl FactoryContract {
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
-    pub fn add_to_whitelist(env: Env, host: Address) -> Result<(), Error> {
+    pub fn add_host_to_whitelist(env: Env, host: Address) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
         let key = (WHITELIST_PREFIX, host.clone());
@@ -277,7 +284,7 @@ impl FactoryContract {
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
-    pub fn remove_from_whitelist(env: Env, host: Address) -> Result<(), Error> {
+    pub fn remove_host_from_whitelist(env: Env, host: Address) -> Result<(), Error> {
         let admin = require_admin(&env)?;
         admin.require_auth();
         let key = (WHITELIST_PREFIX, host.clone());
@@ -291,7 +298,7 @@ impl FactoryContract {
     ///
     /// # Errors
     /// * [`Error::NotInitialized`] — contract not initialised.
-    pub fn is_whitelisted(env: Env, host: Address) -> Result<bool, Error> {
+    pub fn is_host_whitelisted(env: Env, host: Address) -> Result<bool, Error> {
         let key = (WHITELIST_PREFIX, host);
         Ok(env.storage().instance().get(&key).unwrap_or(false))
     }
@@ -347,6 +354,7 @@ impl FactoryContract {
         currency: Address,
         round_speed: u32,
         capacity: u32,
+        is_private: bool,
     ) -> Result<Address, Error> {
         let admin = require_admin(&env)?;
         require_not_paused(&env)?;
@@ -358,7 +366,7 @@ impl FactoryContract {
         // Use invoker() for authorization check.
         // For Soroban 20+, env.invoker() is preferred over passing Address.
         let is_admin = caller == admin;
-        let is_whitelisted = Self::is_whitelisted(env.clone(), caller.clone())?;
+        let is_whitelisted = Self::is_host_whitelisted(env.clone(), caller.clone())?;
 
         if !is_admin && !is_whitelisted {
             return Err(Error::Unauthorized);
@@ -400,6 +408,7 @@ impl FactoryContract {
             creator: caller.clone(),
             capacity,
             stake_amount: stake,
+            is_private,
         };
 
         // ── Deployment ──────────────────────────────────────────────────────────
@@ -442,7 +451,7 @@ impl FactoryContract {
         env.invoke_contract::<()>(
             &arena_address,
             &soroban_sdk::symbol_short!("init"),
-            soroban_sdk::vec![&env, round_speed.into_val(&env), stake.into_val(&env)],
+            soroban_sdk::vec![&env, round_speed.into_val(&env), stake.into_val(&env), is_private.into_val(&env)],
         );
 
         env.invoke_contract::<()>(
@@ -535,6 +544,7 @@ impl FactoryContract {
         let arena_ref = ArenaRef {
             contract: arena_address,
             status: ArenaStatus::Pending,
+            host: host.clone(),
         };
         env.storage().persistent().set(&DataKey::ArenaRef(arena_id), &arena_ref);
     }
@@ -547,7 +557,79 @@ impl FactoryContract {
             .ok_or(Error::ArenaNotFound)
     }
 
-    /// Update the status of an arena. Callable only by the Arena contract itself.
+    /// Add addresses to the private arena whitelist. Host-only.
+    ///
+    /// Only the host (creator) of the arena may call this. Requires auth from
+    /// the host address. The arena must have been registered via
+    /// `set_arena_metadata` before this can be called.
+    ///
+    /// # Errors
+    /// * [`Error::ArenaNotFound`] — no arena registered for `arena_id`.
+    /// * [`Error::Unauthorized`]  — caller is not the arena host.
+    pub fn add_to_whitelist(env: Env, arena_id: u64, addresses: Vec<Address>) -> Result<(), Error> {
+        let arena_ref: ArenaRef = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ArenaRef(arena_id))
+            .ok_or(Error::ArenaNotFound)?;
+
+        // Only the host (pool creator) may manage the whitelist.
+        arena_ref.host.require_auth();
+
+        for address in addresses.iter() {
+            env.storage()
+                .persistent()
+                .set(&DataKey::ArenaWhitelist(arena_id, address.clone()), &true);
+        }
+
+        env.events()
+            .publish((TOPIC_ARENA_WL_ADD,), (EVENT_VERSION, arena_id));
+        Ok(())
+    }
+
+    /// Remove addresses from the private arena whitelist. Host-only.
+    ///
+    /// Only the host (creator) of the arena may call this.
+    ///
+    /// # Errors
+    /// * [`Error::ArenaNotFound`] — no arena registered for `arena_id`.
+    /// * [`Error::Unauthorized`]  — caller is not the arena host.
+    pub fn remove_from_whitelist(
+        env: Env,
+        arena_id: u64,
+        addresses: Vec<Address>,
+    ) -> Result<(), Error> {
+        let arena_ref: ArenaRef = env
+            .storage()
+            .persistent()
+            .get(&DataKey::ArenaRef(arena_id))
+            .ok_or(Error::ArenaNotFound)?;
+
+        // Only the host (pool creator) may manage the whitelist.
+        arena_ref.host.require_auth();
+
+        for address in addresses.iter() {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::ArenaWhitelist(arena_id, address));
+        }
+
+        env.events()
+            .publish((TOPIC_ARENA_WL_REM,), (EVENT_VERSION, arena_id));
+        Ok(())
+    }
+
+    /// Check whether `player` is on the whitelist for `arena_id`.
+    ///
+    /// Returns `false` if the arena does not exist or the player is not listed.
+    /// This is a read-only view — no auth required.
+    pub fn is_whitelisted(env: Env, arena_id: u64, player: Address) -> bool {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ArenaWhitelist(arena_id, player))
+            .unwrap_or(false)
+    }
+
     pub fn update_arena_status(env: Env, arena_id: u64, status: ArenaStatus) -> Result<(), Error> {
         let mut arena_ref: ArenaRef = env
             .storage()

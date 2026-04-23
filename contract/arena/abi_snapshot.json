@@ -89,6 +89,8 @@
     "get_full_state",
     "set_metadata",
     "get_metadata",
-    "state"
+    "state",
+    "get_arena_state_view",
+    "init_factory"
   ]
 }
