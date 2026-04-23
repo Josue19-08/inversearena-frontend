@@ -15,6 +15,7 @@ const YIELD_KEY: Symbol = symbol_short!("YIELD");
 const WINNER_SHARE_KEY: Symbol = symbol_short!("WY_BPS");
 const SURVIVOR_COUNT_KEY: Symbol = symbol_short!("S_COUNT");
 const CANCELLED_KEY: Symbol = symbol_short!("CANCEL");
+const GAME_FINISHED_KEY: Symbol = symbol_short!("FINISHED");
 const PAUSED_KEY: Symbol = symbol_short!("PAUSED");
 const PENDING_HASH_KEY: Symbol = symbol_short!("P_HASH");
 const EXECUTE_AFTER_KEY: Symbol = symbol_short!("P_AFTER");
@@ -39,7 +40,6 @@ const TOPIC_MAX_ROUNDS: Symbol = symbol_short!("MX_ROUND");
 const TOPIC_STATE_CHANGED: Symbol = symbol_short!("ST_CHG");
 const TOPIC_PLAYER_JOINED: Symbol = symbol_short!("P_JOIN");
 const TOPIC_CHOICE_SUBMITTED: Symbol = symbol_short!("CH_SUB");
-const TOPIC_ROUND_RESOLVED: Symbol = symbol_short!("RSLVD");
 const TOPIC_PLAYER_ELIMINATED: Symbol = symbol_short!("P_ELIM");
 const TOPIC_WINNER_DECLARED: Symbol = symbol_short!("W_DECL");
 const TOPIC_ARENA_CANCELLED: Symbol = symbol_short!("A_CANC");
@@ -114,6 +114,10 @@ pub struct ArenaConfig {
     pub max_rounds: u32,
     pub winner_yield_share_bps: u32,
     pub join_deadline: u64,
+    /// Platform win fee in basis points, snapshotted at arena creation.
+    /// Payout uses this value rather than the current global fee so that
+    /// fee changes cannot retroactively affect an in-progress game.
+    pub win_fee_bps: u32,
 }
 
 #[contracttype]
@@ -182,6 +186,10 @@ pub struct YieldDistributed {
     pub winner_yield: i128,
     pub eliminated_yield: i128,
     pub eliminated_count: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PlayerJoined {
     pub arena_id: u64,
     pub player: Address,
@@ -349,6 +357,16 @@ impl ArenaContract {
         required_stake_amount: i128,
         join_deadline: u64,
     ) -> Result<(), ArenaError> {
+        Self::init_with_fee(env, round_speed_in_ledgers, required_stake_amount, join_deadline, 0)
+    }
+
+    pub fn init_with_fee(
+        env: Env,
+        round_speed_in_ledgers: u32,
+        required_stake_amount: i128,
+        join_deadline: u64,
+        win_fee_bps: u32,
+    ) -> Result<(), ArenaError> {
         if env.storage().instance().has(&DataKey::Config) {
             return Err(ArenaError::AlreadyInitialized);
         }
@@ -368,22 +386,16 @@ impl ArenaContract {
             return Err(ArenaError::InvalidAmount);
         }
 
-        let config = ArenaConfig {
-            round_speed_in_ledgers,
-            required_stake_amount,
-            max_rounds: bounds::DEFAULT_MAX_ROUNDS,
-            winner_yield_share_bps: DEFAULT_WINNER_YIELD_SHARE_BPS,
-        };
-        env.storage().instance().set(&DataKey::Config, &config);
         env.storage().instance().extend_ttl(GAME_TTL_THRESHOLD, GAME_TTL_EXTEND_TO);
         env.storage().instance().set(
             &DataKey::Config,
             &ArenaConfig {
                 round_speed_in_ledgers,
-                round_duration_seconds: 0,
                 required_stake_amount,
                 max_rounds: bounds::DEFAULT_MAX_ROUNDS,
+                winner_yield_share_bps: DEFAULT_WINNER_YIELD_SHARE_BPS,
                 join_deadline,
+                win_fee_bps,
             },
         );
         env.storage().instance().set(
@@ -502,45 +514,6 @@ impl ArenaContract {
                 entry_fee: amount,
             },
         );
-        Ok(())
-    }
-
-    pub fn cancel_arena(env: Env) -> Result<(), ArenaError> {
-        require_not_paused(&env)?;
-        let admin = Self::admin(env.clone());
-        admin.require_auth();
-
-        if env.storage().instance().get::<_, bool>(&CANCELLED_KEY).unwrap_or(false) {
-            return Err(ArenaError::AlreadyCancelled);
-        }
-        if env.storage().instance().get::<_, bool>(&GAME_FINISHED_KEY).unwrap_or(false) {
-            return Err(ArenaError::GameAlreadyFinished);
-        }
-
-        let all_players: Vec<Address> = env.storage().persistent().get(&DataKey::AllPlayers).unwrap_or(Vec::new(&env));
-        if !all_players.is_empty() {
-            let config = get_config(&env)?;
-            let token: Address = env.storage().instance().get(&TOKEN_KEY).ok_or(ArenaError::TokenNotSet)?;
-            let refund_amount = config.required_stake_amount;
-            let token_client = token::Client::new(&env, &token);
-
-            for player in all_players.iter() {
-                if env.storage().persistent().has(&DataKey::Survivor(player.clone()))
-                    && !env.storage().persistent().has(&DataKey::Refunded(player.clone()))
-                {
-                    env.storage().persistent().set(&DataKey::Refunded(player.clone()), &());
-                    bump(&env, &DataKey::Refunded(player.clone()));
-                    token_client.transfer(&env.current_contract_address(), &player, &refund_amount);
-                }
-            }
-            env.storage().instance().set(&PRIZE_POOL_KEY, &0i128);
-        }
-
-        env.storage().instance().set(&CANCELLED_KEY, &true);
-        env.storage().instance().set(&GAME_FINISHED_KEY, &true);
-        set_state(&env, ArenaState::Cancelled);
-        env.events().publish((TOPIC_CANCELLED,), (EVENT_VERSION,));
-
         Ok(())
     }
 
@@ -1368,5 +1341,9 @@ mod abi_guard;
 mod commit_reveal_tests;
 #[cfg(test)]
 mod expire_arena_tests;
-// #[cfg(test)]
-// mod test;
+#[cfg(test)]
+mod mutation_tests;
+#[cfg(test)]
+mod state_machine_tests;
+#[cfg(test)]
+mod test;
