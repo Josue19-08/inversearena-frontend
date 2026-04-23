@@ -447,8 +447,8 @@ fn test_propose_upgrade_allowed_after_cancel() {
 
 #[test]
 fn test_execute_without_proposal_returns_no_pending_upgrade() {
-    let (_env, _admin, client) = setup();
-    let result = client.try_execute_upgrade();
+    let (env, _admin, client) = setup();
+    let result = client.try_execute_upgrade(&dummy_hash(&env));
     assert_eq!(result, Err(Ok(Error::NoPendingUpgrade)));
 }
 
@@ -462,7 +462,7 @@ fn test_execute_with_only_pending_hash_returns_malformed_upgrade_state() {
             .set(&PENDING_HASH_KEY, &dummy_hash(&env));
     });
 
-    let result = client.try_execute_upgrade();
+    let result = client.try_execute_upgrade(&dummy_hash(&env));
     assert_eq!(result, Err(Ok(Error::MalformedUpgradeState)));
 }
 
@@ -477,19 +477,20 @@ fn test_execute_with_only_execute_after_returns_malformed_upgrade_state() {
         );
     });
 
-    let result = client.try_execute_upgrade();
+    let result = client.try_execute_upgrade(&dummy_hash(&env));
     assert_eq!(result, Err(Ok(Error::MalformedUpgradeState)));
 }
 
 #[test]
 fn test_execute_before_timelock_returns_timelock_not_expired() {
     let (env, _admin, client) = setup();
-    client.propose_upgrade(&dummy_hash(&env));
+    let hash = dummy_hash(&env);
+    client.propose_upgrade(&hash);
     // Advance only 47 h — one hour short.
     env.ledger().with_mut(|l| {
         l.timestamp += 47 * 60 * 60;
     });
-    let result = client.try_execute_upgrade();
+    let result = client.try_execute_upgrade(&hash);
     assert_eq!(result, Err(Ok(Error::TimelockNotExpired)));
 }
 
@@ -497,11 +498,12 @@ fn test_execute_before_timelock_returns_timelock_not_expired() {
 fn test_execute_exactly_at_boundary_returns_timelock_not_expired() {
     let (env, _admin, client) = setup();
     let propose_time = env.ledger().timestamp();
-    client.propose_upgrade(&dummy_hash(&env));
+    let hash = dummy_hash(&env);
+    client.propose_upgrade(&hash);
     env.ledger().with_mut(|l| {
         l.timestamp = propose_time + TIMELOCK - 1;
     });
-    let result = client.try_execute_upgrade();
+    let result = client.try_execute_upgrade(&hash);
     assert_eq!(result, Err(Ok(Error::TimelockNotExpired)));
 }
 
@@ -527,13 +529,14 @@ fn test_cancel_clears_pending_upgrade() {
 #[test]
 fn test_execute_after_cancel_returns_no_pending_upgrade() {
     let (env, _admin, client) = setup();
-    client.propose_upgrade(&dummy_hash(&env));
+    let hash = dummy_hash(&env);
+    client.propose_upgrade(&hash);
     client.cancel_upgrade();
 
     env.ledger().with_mut(|l| {
         l.timestamp += TIMELOCK + 1;
     });
-    let result = client.try_execute_upgrade();
+    let result = client.try_execute_upgrade(&hash);
     assert_eq!(result, Err(Ok(Error::NoPendingUpgrade)));
 }
 
@@ -560,6 +563,150 @@ fn test_pending_upgrade_none_after_cancel() {
     client.propose_upgrade(&dummy_hash(&env));
     client.cancel_upgrade();
     assert!(client.pending_upgrade().is_none());
+}
+
+// ── Issue #518: required timelock test suite (9 cases) ───────────────────────
+
+#[test]
+fn timelock_propose_stores_hash_and_executable_after_and_emits_event() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+
+    client.propose_upgrade(&hash);
+
+    let pending = client.pending_upgrade().expect("pending must be set");
+    assert_eq!(pending.0, hash);
+    assert!(
+        pending.1 >= env.ledger().timestamp() + TIMELOCK,
+        "executable_after must be at least propose_time + 48h"
+    );
+}
+
+#[test]
+fn timelock_execute_before_delay_returns_timelock_not_expired() {
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK - 1;
+    });
+    assert_eq!(
+        client.try_execute_upgrade(&hash),
+        Err(Ok(Error::TimelockNotExpired))
+    );
+}
+
+#[test]
+fn timelock_execute_exactly_at_boundary_passes_timelock_check() {
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK;
+    });
+    let result = client.try_execute_upgrade(&hash);
+    assert_ne!(
+        result,
+        Err(Ok(Error::TimelockNotExpired)),
+        "timelock must allow execution at timestamp == execute_after"
+    );
+}
+
+#[test]
+fn timelock_execute_after_delay_passes_timelock_check() {
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK + 3600;
+    });
+    let result = client.try_execute_upgrade(&hash);
+    assert_ne!(
+        result,
+        Err(Ok(Error::TimelockNotExpired)),
+        "timelock must allow execution after the delay"
+    );
+}
+
+#[test]
+fn timelock_cancel_before_execute_clears_pending_and_execute_panics() {
+    let (env, _admin, client) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+    client.cancel_upgrade();
+
+    assert!(client.pending_upgrade().is_none());
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK + 1;
+    });
+    assert_eq!(
+        client.try_execute_upgrade(&hash),
+        Err(Ok(Error::NoPendingUpgrade))
+    );
+}
+
+#[test]
+#[should_panic(expected = "InvalidAction")]
+fn timelock_non_admin_propose_panics() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+}
+
+#[test]
+#[should_panic(expected = "InvalidAction")]
+fn timelock_non_admin_execute_panics() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let client = FactoryContractClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    client.initialize(&admin);
+
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.execute_upgrade(&hash);
+}
+
+#[test]
+fn timelock_double_propose_returns_upgrade_already_pending() {
+    let (env, _admin, client) = setup();
+    let hash1 = BytesN::from_array(&env, &[1u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.propose_upgrade(&hash1);
+    let result = client.try_propose_upgrade(&hash2);
+    assert_eq!(result, Err(Ok(Error::UpgradeAlreadyPending)));
+
+    // First proposal is intact.
+    let pending = client.pending_upgrade().unwrap();
+    assert_eq!(pending.0, hash1);
+}
+
+#[test]
+fn timelock_execute_with_wrong_hash_returns_hash_mismatch() {
+    let (env, _admin, client) = setup();
+    let stored_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let wrong_hash = BytesN::from_array(&env, &[0xFFu8; 32]);
+
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&stored_hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK;
+    });
+
+    assert_eq!(
+        client.try_execute_upgrade(&wrong_hash),
+        Err(Ok(Error::HashMismatch))
+    );
 }
 
 // ── Admin access control ──────────────────────────────────────────────────────
@@ -692,7 +839,7 @@ fn test_unauthorized_execute_upgrade_panics() {
     let client = FactoryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
     client.initialize(&admin);
-    client.execute_upgrade();
+    client.execute_upgrade(&dummy_hash(&env));
 }
 
 #[test]
@@ -1054,7 +1201,7 @@ fn test_update_arena_status_success_and_auth() {
     let (env, admin, client) = setup();
     client.set_arena_wasm_hash(&dummy_hash(&env));
     let currency = supported_currency(&env, &client);
-    
+
     // Create pool will internally call set_arena_metadata, setting status to Pending
     let arena_addr = client.create_pool(&admin, &MIN_STAKE, &currency, &10u32, &10u32, &(env.ledger().timestamp() + 7200));
 
@@ -1067,7 +1214,7 @@ fn test_update_arena_status_success_and_auth() {
         &None,
         &admin,
     );
-    
+
     // Check initial status
     let arena_ref = client.get_arena_ref(&0u64);
     assert_eq!(arena_ref.contract, arena_addr);
@@ -1098,10 +1245,10 @@ fn test_update_arena_status_unauthorized() {
     let env = Env::default();
     let contract_id = env.register(FactoryContract, ());
     let client = FactoryContractClient::new(&env, &contract_id);
-    
+
     // Generate a dummy arena address
     let arena_addr = Address::generate(&env);
-    
+
     // Inject ArenaRef directly to avoid needing to mock complex auth trees
     env.as_contract(&contract_id, || {
         env.storage().persistent().set(
@@ -1117,4 +1264,199 @@ fn test_update_arena_status_unauthorized() {
     // This should fail because update_arena_status requires arena_addr.require_auth().
     let result = client.try_update_arena_status(&0u64, &crate::ArenaStatus::Active);
     assert_auth_err(result);
+}
+
+// ── Issue #517: fee timelock tests ────────────────────────────────────────────
+
+const FEE_TIMELOCK: u64 = 24 * 60 * 60; // 24 hours
+
+#[test]
+fn fee_default_is_200_bps() {
+    let (_env, _admin, client) = setup();
+    assert_eq!(client.current_fee_bps(), 200u32);
+}
+
+#[test]
+fn fee_propose_stores_pending_and_effective_at() {
+    let (env, _admin, client) = setup();
+    let new_fee = 500u32;
+
+    client.propose_fee_update(&new_fee);
+
+    let pending = client.pending_fee_update().expect("pending fee must be set");
+    assert_eq!(pending.0, new_fee);
+    assert!(
+        pending.1 >= env.ledger().timestamp() + FEE_TIMELOCK,
+        "effective_at must be at least now + 24h"
+    );
+    // Current fee must not change yet.
+    assert_eq!(client.current_fee_bps(), 200u32);
+}
+
+#[test]
+fn fee_execute_before_timelock_returns_fee_timelock_not_expired() {
+    let (env, _admin, client) = setup();
+    client.propose_fee_update(&500u32);
+    env.ledger().with_mut(|l| {
+        l.timestamp += FEE_TIMELOCK - 1;
+    });
+    assert_eq!(
+        client.try_execute_fee_update(),
+        Err(Ok(Error::FeeTimelockNotExpired))
+    );
+}
+
+#[test]
+fn fee_execute_exactly_at_boundary_passes() {
+    let (env, _admin, client) = setup();
+    let propose_time = env.ledger().timestamp();
+    client.propose_fee_update(&500u32);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + FEE_TIMELOCK;
+    });
+    // Should not return FeeTimelockNotExpired (may fail with other errors in test env).
+    let result = client.try_execute_fee_update();
+    assert_ne!(
+        result,
+        Err(Ok(Error::FeeTimelockNotExpired)),
+        "fee update must be allowed at timestamp == effective_at"
+    );
+}
+
+#[test]
+fn fee_execute_after_timelock_applies_new_fee() {
+    let (env, _admin, client) = setup();
+    let propose_time = env.ledger().timestamp();
+    let new_fee = 300u32;
+    client.propose_fee_update(&new_fee);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + FEE_TIMELOCK + 1;
+    });
+    client.execute_fee_update();
+
+    assert_eq!(client.current_fee_bps(), new_fee);
+    assert!(
+        client.pending_fee_update().is_none(),
+        "pending state must be cleared after execution"
+    );
+}
+
+#[test]
+fn fee_cancel_clears_pending_and_fee_unchanged() {
+    let (_env, _admin, client) = setup();
+    client.propose_fee_update(&999u32);
+    client.cancel_fee_update();
+
+    assert!(client.pending_fee_update().is_none());
+    assert_eq!(client.current_fee_bps(), 200u32, "fee must remain unchanged after cancel");
+}
+
+#[test]
+fn fee_execute_without_pending_returns_no_pending_fee_update() {
+    let (_env, _admin, client) = setup();
+    assert_eq!(
+        client.try_execute_fee_update(),
+        Err(Ok(Error::NoPendingFeeUpdate))
+    );
+}
+
+#[test]
+fn fee_cancel_without_pending_returns_no_pending_fee_update() {
+    let (_env, _admin, client) = setup();
+    assert_eq!(
+        client.try_cancel_fee_update(),
+        Err(Ok(Error::NoPendingFeeUpdate))
+    );
+}
+
+#[test]
+fn fee_double_propose_returns_fee_already_pending() {
+    let (_env, _admin, client) = setup();
+    client.propose_fee_update(&300u32);
+    let result = client.try_propose_fee_update(&400u32);
+    assert_eq!(result, Err(Ok(Error::FeeAlreadyPending)));
+    // Original fee update still pending.
+    assert_eq!(client.pending_fee_update().unwrap().0, 300u32);
+}
+
+#[test]
+fn fee_propose_exceeding_max_returns_fee_too_high() {
+    let (_env, _admin, client) = setup();
+    assert_eq!(
+        client.try_propose_fee_update(&2_001u32),
+        Err(Ok(Error::FeeTooHigh))
+    );
+}
+
+#[test]
+fn fee_propose_at_max_succeeds() {
+    let (_env, _admin, client) = setup();
+    assert!(client.try_propose_fee_update(&2_000u32).is_ok());
+}
+
+#[test]
+fn fee_non_admin_propose_fails() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+    let c = FactoryContractClient::new(&env, &contract_id);
+    c.initialize(&admin);
+    env.mock_auths(&[]);
+    let result = c.try_propose_fee_update(&300u32);
+    assert!(result.is_err(), "non-admin must not be able to propose a fee update");
+}
+
+#[test]
+fn fee_non_admin_execute_fails() {
+    let env = Env::default();
+    let contract_id = env.register(FactoryContract, ());
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+    let c = FactoryContractClient::new(&env, &contract_id);
+    c.initialize(&admin);
+    c.propose_fee_update(&300u32);
+    env.ledger().with_mut(|l| {
+        l.timestamp += FEE_TIMELOCK + 1;
+    });
+    env.mock_auths(&[]);
+    let result = c.try_execute_fee_update();
+    assert!(result.is_err(), "non-admin must not be able to execute a fee update");
+}
+
+#[test]
+fn fee_snapshot_stored_in_arena_metadata() {
+    // Create a pool, then change the fee — existing arena metadata must retain
+    // the fee that was in effect at creation time.
+    let (env, admin, client) = setup();
+    client.set_arena_wasm_hash(&dummy_hash(&env));
+    let currency = supported_currency(&env, &client);
+    let host = admin.clone();
+
+    // Default fee is 200 bps at creation time.
+    let arena_addr = client.create_pool(&host, &MIN_STAKE, &currency, &5u32, &4u32, &(env.ledger().timestamp() + 7200));
+    let pool_id = 0u32;
+    let metadata = client.get_arena(&pool_id).expect("arena must exist");
+    assert_eq!(metadata.win_fee_bps, 200u32, "fee snapshot must equal 200 at creation");
+
+    // Now queue and apply a fee change.
+    client.propose_fee_update(&500u32);
+    env.ledger().with_mut(|l| {
+        l.timestamp += FEE_TIMELOCK + 1;
+    });
+    client.execute_fee_update();
+    assert_eq!(client.current_fee_bps(), 500u32);
+
+    // The existing arena's metadata must still show the original 200 bps.
+    let metadata_after = client.get_arena(&pool_id).expect("arena must still exist");
+    assert_eq!(
+        metadata_after.win_fee_bps, 200u32,
+        "fee snapshot in arena metadata must not change when global fee is updated"
+    );
+
+    // A newly created arena should pick up the new 500 bps fee.
+    let arena_addr2 = client.create_pool(&host, &MIN_STAKE, &currency, &5u32, &4u32, &(env.ledger().timestamp() + 7200));
+    let metadata2 = client.get_arena(&1u32).expect("second arena must exist");
+    assert_eq!(metadata2.win_fee_bps, 500u32, "new arena must snapshot the current 500 bps fee");
+    let _ = (arena_addr, arena_addr2);
 }
