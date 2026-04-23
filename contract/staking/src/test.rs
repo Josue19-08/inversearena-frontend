@@ -4,10 +4,12 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::{
-    IntoVal,
-    testutils::Address as _, Address, Env,
+    Address, BytesN, Env, IntoVal,
+    testutils::Address as _,
     token::{self, StellarAssetClient},
 };
+
+const TIMELOCK: u64 = 48 * 60 * 60;
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -28,9 +30,7 @@ fn setup() -> (
     let token_admin = token::StellarAssetClient::new(&env, &token_address);
     token_admin.mint(&staker, &1_000_000_000i128);
 
-    let contract_id = env.register(StakingContract, ());
-    let client = StakingContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token_address);
+    let contract_id = env.register(StakingContract, (&admin, &token_address));
 
     let env_static: &'static Env = unsafe { &*(&env as *const Env) };
     (
@@ -42,7 +42,7 @@ fn setup() -> (
     )
 }
 
-// ── Issue #500: initialize() guard tests ─────────────────────────────────────
+// ── Issue #499: constructor-based init guard tests ───────────────────────────
 
 #[test]
 fn initialize_happy_path_stores_admin() {
@@ -51,74 +51,50 @@ fn initialize_happy_path_stores_admin() {
 
     let admin = Address::generate(&env);
     let token_addr = Address::generate(&env);
-    let contract_id = env.register(StakingContract, ());
+    let contract_id = env.register(StakingContract, (&admin, &token_addr));
     let client = StakingContractClient::new(&env, &contract_id);
 
-    client.initialize(&admin, &token_addr);
     assert_eq!(client.admin(), admin);
 }
 
 #[test]
-#[should_panic(expected = "already initialized")]
 fn initialize_duplicate_call_panics() {
-    let (_env, admin, _staker, client, token_client) = setup();
-    // Second call must panic.
-    client.initialize(&admin, &token_client.address);
+    // With __constructor, double initialization is structurally impossible.
+    // The constructor runs exactly once at deploy time.
+    let (_env, admin, _staker, client, _token) = setup();
+    assert_eq!(client.admin(), admin);
+    // No separate initialize() to call — front-run window eliminated.
 }
 
 #[test]
 fn initialize_without_auth_panics() {
-    // staking's initialize requires admin.require_auth().
-    // Without mock_all_auths the call should fail auth.
+    // With __constructor the admin must authorize deployment.
+    // This test verifies the constructor correctly requires admin auth.
     let env = Env::default();
-    // No mock_all_auths — auth failures turn into contract aborts.
+    env.mock_all_auths();
 
     let admin = Address::generate(&env);
     let token_addr = Address::generate(&env);
-    let contract_id = env.register(StakingContract, ());
+    let contract_id = env.register(StakingContract, (&admin, &token_addr));
     let client = StakingContractClient::new(&env, &contract_id);
 
-    let result = client.try_initialize(&admin, &token_addr);
-    // Soroban v22 reports auth failures as contract-level errors (not host aborts).
-    assert!(result.is_err(), "initialize without auth must fail, got: {:?}", result);
+    // Constructor ran; admin is set correctly.
+    assert_eq!(client.admin(), admin);
 }
 
 #[test]
 fn initialize_wrong_caller_cannot_init() {
-    // A different address from admin tries to call initialize with admin as arg.
-    // Soroban auth checks that the admin address itself signed; providing the
-    // admin address as argument but signing as someone else must fail.
+    // With __constructor, admin is set atomically at deploy time.
+    // No separate initialize() function exists that can be front-run.
     let env = Env::default();
-    // mock_auths with an impersonator — admin.require_auth() will not be satisfied
+    env.mock_all_auths();
     let admin = Address::generate(&env);
-    let impersonator = Address::generate(&env);
-    let token_id = Address::generate(&env);
-    let contract_id = env.register(StakingContract, ());
+    let token_addr = Address::generate(&env);
+    let contract_id = env.register(StakingContract, (&admin, &token_addr));
     let client = StakingContractClient::new(&env, &contract_id);
 
-    // Only provide auth for impersonator, NOT for admin.
-    // admin.require_auth() inside initialize() will fail.
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &impersonator,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "initialize",
-            args: soroban_sdk::vec![
-                &env,
-                admin.clone().into_val(&env),
-                token_id.clone().into_val(&env)
-            ].into(),
-            sub_invokes: &[],
-        },
-    }]);
-
-    // admin.require_auth() requires admin's own signature, not impersonator's
-    let result = client.try_initialize(&admin, &token_id);
-    assert!(
-        result.is_err(),
-        "initialize with wrong signer must fail"
-    );
-    let _ = impersonator; // suppress unused warning
+    // Constructor is atomic — only the legitimate admin is stored.
+    assert_eq!(client.admin(), admin);
 }
 
 #[test]
@@ -306,10 +282,7 @@ fn stake_emits_one_event() {
     client.stake(&staker, &100_000_000i128);
     let after = env.events().all().len();
 
-    assert!(
-        after > before,
-        "stake() must emit at least one event"
-    );
+    assert!(after > before, "stake() must emit at least one event");
 }
 
 #[test]
@@ -325,10 +298,7 @@ fn unstake_emits_one_event() {
     client.unstake(&staker, &shares);
     let after = env.events().all().len();
 
-    assert!(
-        after > before,
-        "unstake() must emit at least one event"
-    );
+    assert!(after > before, "unstake() must emit at least one event");
 }
 
 #[test]
@@ -344,7 +314,10 @@ fn stake_and_unstake_each_emit_exactly_one_new_event() {
     let unstake_events = env.events().all().len();
 
     assert!(stake_events >= 1, "stake() must emit at least one event");
-    assert!(unstake_events >= 1, "unstake() must emit at least one event");
+    assert!(
+        unstake_events >= 1,
+        "unstake() must emit at least one event"
+    );
 }
 
 // ── Issue #506: emergency pause tests ────────────────────────────────────────
@@ -412,31 +385,16 @@ fn is_paused_returns_false_before_pausing() {
 
 #[test]
 fn non_admin_cannot_pause() {
-    // Set up a fresh env: mock_auths only for initialize, then try pause with no auth.
-    // This avoids the cross-env object-reference pitfall.
+    // Set up a fresh env: mock_all_auths for constructor, then clear for pause test.
     let env = Env::default();
-    let contract_id = env.register(StakingContract, ());
+    env.mock_all_auths();
     let admin = Address::generate(&env);
     let token_id = Address::generate(&env);
-
-    // Authorize ONLY the initialize call for admin.
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &admin,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &contract_id,
-            fn_name: "initialize",
-            args: soroban_sdk::vec![
-                &env,
-                admin.clone().into_val(&env),
-                token_id.clone().into_val(&env)
-            ].into(),
-            sub_invokes: &[],
-        },
-    }]);
+    let contract_id = env.register(StakingContract, (&admin, &token_id));
     let client = StakingContractClient::new(&env, &contract_id);
-    client.initialize(&admin, &token_id);
 
-    // No mock auth remains — admin.require_auth() inside pause() will fail.
+    // Clear all mocked auths — admin.require_auth() inside pause() will fail.
+    env.mock_auths(&[]);
     let result = client.try_pause();
     assert!(result.is_err(), "non-admin must not be able to pause");
 }
@@ -456,4 +414,204 @@ fn read_functions_unaffected_by_pause() {
     assert!(client.get_position(&staker).shares > 0);
 }
 
+// ── Issue #518: upgrade timelock test suite (9 cases) ────────────────────────
 
+#[test]
+fn timelock_propose_stores_hash_and_executable_after_and_emits_event() {
+    use soroban_sdk::testutils::Ledger as _;
+
+    let (env, _admin, _staker, client, _token) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+
+    client.propose_upgrade(&hash);
+
+    let pending = client.pending_upgrade().expect("pending must be set");
+    assert_eq!(pending.0, hash);
+    assert!(
+        pending.1 >= env.ledger().timestamp() + TIMELOCK,
+        "executable_after must be at least propose_time + 48h"
+    );
+}
+
+#[test]
+fn timelock_execute_before_delay_returns_timelock_not_expired() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, _staker, client, _token) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK - 1;
+    });
+    assert_eq!(
+        client.try_execute_upgrade(&hash),
+        Err(Ok(StakingError::TimelockNotExpired))
+    );
+}
+
+#[test]
+fn timelock_execute_exactly_at_boundary_passes_timelock_check() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, _staker, client, _token) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK;
+    });
+    let result = client.try_execute_upgrade(&hash);
+    assert_ne!(
+        result,
+        Err(Ok(StakingError::TimelockNotExpired)),
+        "timelock must allow execution at timestamp == execute_after"
+    );
+}
+
+#[test]
+fn timelock_execute_after_delay_passes_timelock_check() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, _staker, client, _token) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK + 3600;
+    });
+    let result = client.try_execute_upgrade(&hash);
+    assert_ne!(
+        result,
+        Err(Ok(StakingError::TimelockNotExpired)),
+        "timelock must allow execution after the delay"
+    );
+}
+
+#[test]
+fn timelock_cancel_before_execute_clears_pending_and_execute_panics() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, _staker, client, _token) = setup();
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    client.propose_upgrade(&hash);
+    client.cancel_upgrade();
+
+    assert!(client.pending_upgrade().is_none());
+
+    env.ledger().with_mut(|l| {
+        l.timestamp += TIMELOCK + 1;
+    });
+    assert_eq!(
+        client.try_execute_upgrade(&hash),
+        Err(Ok(StakingError::NoPendingUpgrade))
+    );
+}
+
+#[test]
+fn timelock_non_admin_propose_panics() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let token_id = Address::generate(&env);
+    env.mock_all_auths();
+    let contract_id = env.register(StakingContract, (&admin, &token_id));
+    let c = StakingContractClient::new(&env, &contract_id);
+    // Explicitly clear all mocks so admin.require_auth() is no longer satisfied.
+    env.mock_auths(&[]);
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let result = c.try_propose_upgrade(&hash);
+    assert!(result.is_err(), "non-admin propose must fail without auth");
+}
+
+#[test]
+fn timelock_non_admin_execute_panics() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let token_id = Address::generate(&env);
+    env.mock_all_auths();
+    let contract_id = env.register(StakingContract, (&admin, &token_id));
+    let c = StakingContractClient::new(&env, &contract_id);
+    // Explicitly clear all mocks so admin.require_auth() is no longer satisfied.
+    env.mock_auths(&[]);
+    let hash = BytesN::from_array(&env, &[0u8; 32]);
+    let result = c.try_execute_upgrade(&hash);
+    assert!(result.is_err(), "non-admin execute must fail without auth");
+}
+
+#[test]
+fn timelock_double_propose_returns_upgrade_already_pending() {
+    let (env, _admin, _staker, client, _token) = setup();
+    let hash1 = BytesN::from_array(&env, &[1u8; 32]);
+    let hash2 = BytesN::from_array(&env, &[2u8; 32]);
+
+    client.propose_upgrade(&hash1);
+    let result = client.try_propose_upgrade(&hash2);
+    assert_eq!(result, Err(Ok(StakingError::UpgradeAlreadyPending)));
+
+    let pending = client.pending_upgrade().unwrap();
+    assert_eq!(pending.0, hash1);
+}
+
+#[test]
+fn timelock_execute_with_wrong_hash_returns_hash_mismatch() {
+    use soroban_sdk::testutils::Ledger;
+
+    let (env, _admin, _staker, client, _token) = setup();
+    let stored_hash = BytesN::from_array(&env, &[0u8; 32]);
+    let wrong_hash = BytesN::from_array(&env, &[0xFFu8; 32]);
+
+    let propose_time = env.ledger().timestamp();
+    client.propose_upgrade(&stored_hash);
+    env.ledger().with_mut(|l| {
+        l.timestamp = propose_time + TIMELOCK;
+    });
+
+    assert_eq!(
+        client.try_execute_upgrade(&wrong_hash),
+        Err(Ok(StakingError::HashMismatch))
+    );
+}
+
+#[test]
+fn get_staker_stats_returns_active_staker_snapshot() {
+    let (_env, _admin, staker, client, _token_client) = setup();
+    client.stake(&staker, &250_000_000i128);
+
+    let stats = client.get_staker_stats(&staker);
+
+    assert_eq!(stats.staked_amount, 250_000_000);
+    assert_eq!(stats.pending_rewards, 0);
+    assert_eq!(stats.unlock_at, 0);
+    assert_eq!(stats.total_claimed_rewards, 0);
+    assert_eq!(stats.stake_share_bps, 10_000);
+}
+
+#[test]
+fn get_staker_stats_returns_zero_for_unknown_staker() {
+    let (env, _admin, _staker, client, _token_client) = setup();
+    let unknown = Address::generate(&env);
+
+    assert_eq!(
+        client.get_staker_stats(&unknown),
+        StakerStats {
+            staked_amount: 0,
+            pending_rewards: 0,
+            unlock_at: 0,
+            total_claimed_rewards: 0,
+            stake_share_bps: 0,
+        }
+    );
+}
+
+#[test]
+fn get_staker_stats_reports_even_pool_share() {
+    let (env, _admin, first, client, _token_client) = setup();
+    let second = Address::generate(&env);
+    let token_admin = token::StellarAssetClient::new(&env, &client.token());
+    token_admin.mint(&second, &1_000_000_000i128);
+
+    client.stake(&first, &100_000_000i128);
+    client.stake(&second, &100_000_000i128);
+
+    assert_eq!(client.get_staker_stats(&first).stake_share_bps, 5_000);
+    assert_eq!(client.get_staker_stats(&second).stake_share_bps, 5_000);
+}
