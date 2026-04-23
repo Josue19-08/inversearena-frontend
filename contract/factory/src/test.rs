@@ -65,23 +65,46 @@ fn test_double_initialize_returns_already_initialized() {
 
 // ── whitelist management ───────────────────────────────────────────────────────
 
+/// Helper: inject an ArenaRef with a known host into factory storage.
+fn inject_arena_ref(env: &Env, contract_id: &Address, arena_id: u64, host: &Address) {
+    let fake_contract = Address::generate(env);
+    env.as_contract(contract_id, || {
+        env.storage().persistent().set(
+            &DataKey::ArenaRef(arena_id),
+            &ArenaRef {
+                contract: fake_contract,
+                status: ArenaStatus::Pending,
+                host: host.clone(),
+            },
+        );
+    });
+}
+
 #[test]
 fn test_add_to_whitelist() {
     let (env, _admin, client) = setup();
     let host = Address::generate(&env);
-    assert!(!client.is_whitelisted(&host));
-    client.add_to_whitelist(&host);
-    assert!(client.is_whitelisted(&host));
+    let arena_id: u64 = 1;
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+
+    let player = Address::generate(&env);
+    assert!(!client.is_whitelisted(&arena_id, &player));
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(client.is_whitelisted(&arena_id, &player));
 }
 
 #[test]
 fn test_remove_from_whitelist() {
     let (env, _admin, client) = setup();
     let host = Address::generate(&env);
-    client.add_to_whitelist(&host);
-    assert!(client.is_whitelisted(&host));
-    client.remove_from_whitelist(&host);
-    assert!(!client.is_whitelisted(&host));
+    let arena_id: u64 = 2;
+    inject_arena_ref(&env, &client.address, arena_id, &host);
+
+    let player = Address::generate(&env);
+    client.add_to_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(client.is_whitelisted(&arena_id, &player));
+    client.remove_from_whitelist(&arena_id, &soroban_sdk::vec![&env, player.clone()]);
+    assert!(!client.is_whitelisted(&arena_id, &player));
 }
 
 #[test]
@@ -90,7 +113,7 @@ fn test_is_whitelisted_when_not_initialized_returns_not_initialized() {
     let contract_id = env.register(FactoryContract, ());
     let client = FactoryContractClient::new(&env, &contract_id);
     let host = Address::generate(&env);
-    let result = client.try_is_whitelisted(&host);
+    let result = client.try_is_whitelisted(&0u64, &host);
     assert_eq!(result, Ok(Ok(false)));
 }
 
@@ -161,7 +184,8 @@ fn test_admin_can_create_pool() {
 fn test_whitelisted_host_can_create_pool() {
     let (env, _admin, client) = setup();
     let host = Address::generate(&env);
-    client.add_to_whitelist(&host);
+    // Use add_host_to_whitelist (protocol-level host whitelist) to allow pool creation.
+    client.add_host_to_whitelist(&host);
 
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
@@ -200,7 +224,8 @@ fn test_create_pool_allows_whitelisted_host_in_mock_auth_env() {
     let client = FactoryContractClient::new(env_static, &contract_id);
 
     let host = Address::generate(&env);
-    client.add_to_whitelist(&host);
+    // Use add_host_to_whitelist (protocol-level host whitelist) to allow pool creation.
+    client.add_host_to_whitelist(&host);
 
     let wasm_hash = dummy_hash(&env);
     client.set_arena_wasm_hash(&wasm_hash);
@@ -798,11 +823,24 @@ fn test_unauthorized_whitelist_panics() {
     let contract_id = env.register(FactoryContract, ());
     let client = FactoryContractClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let known_host = Address::generate(&env);
+    let fake_contract = Address::generate(&env);
     env.as_contract(&contract_id, || {
         env.storage().instance().set(&ADMIN_KEY, &admin);
+        // Inject an ArenaRef so the lookup succeeds and auth is checked.
+        env.storage().persistent().set(
+            &DataKey::ArenaRef(0u64),
+            &ArenaRef {
+                contract: fake_contract,
+                status: ArenaStatus::Pending,
+                host: known_host.clone(),
+            },
+        );
     });
-    assert_auth_err(client.try_add_to_whitelist(&Address::generate(&env)));
-    assert_auth_err(client.try_remove_from_whitelist(&Address::generate(&env)));
+    // An attacker (not the host) must fail auth on add_to_whitelist.
+    assert_auth_err(client.try_add_to_whitelist(&0u64, &soroban_sdk::vec![&env, Address::generate(&env)]));
+    // And on remove_from_whitelist.
+    assert_auth_err(client.try_remove_from_whitelist(&0u64, &soroban_sdk::vec![&env, Address::generate(&env)]));
 }
 
 #[test]
@@ -1175,7 +1213,7 @@ fn read_functions_unaffected_by_factory_pause() {
     let (env, admin, client) = setup();
     client.pause();
     assert_eq!(client.admin(), admin);
-    assert!(!client.is_whitelisted(&Address::generate(&env)));
+    assert!(!client.is_whitelisted(&0u64, &Address::generate(&env)));
     assert_eq!(client.get_min_stake(), MIN_STAKE);
     assert!(client.is_paused());
 }
@@ -1256,6 +1294,7 @@ fn test_update_arena_status_unauthorized() {
             &crate::ArenaRef {
                 contract: arena_addr.clone(),
                 status: crate::ArenaStatus::Pending,
+                host: Address::generate(&env),
             },
         );
     });

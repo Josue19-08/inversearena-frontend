@@ -35,7 +35,6 @@ const TOPIC_YIELD_DISTRIBUTED: Symbol = symbol_short!("Y_DIST");
 const TOPIC_PAUSED: Symbol = symbol_short!("PAUSED");
 const TOPIC_UNPAUSED: Symbol = symbol_short!("UNPAUSED");
 const TOPIC_LEAVE: Symbol = symbol_short!("LEAVE");
-const TOPIC_CANCELLED: Symbol = symbol_short!("CANCELLED");
 const TOPIC_MAX_ROUNDS: Symbol = symbol_short!("MX_ROUND");
 const TOPIC_STATE_CHANGED: Symbol = symbol_short!("ST_CHG");
 const TOPIC_PLAYER_JOINED: Symbol = symbol_short!("P_JOIN");
@@ -44,6 +43,16 @@ const TOPIC_PLAYER_ELIMINATED: Symbol = symbol_short!("P_ELIM");
 const TOPIC_WINNER_DECLARED: Symbol = symbol_short!("W_DECL");
 const TOPIC_ARENA_CANCELLED: Symbol = symbol_short!("A_CANC");
 const TOPIC_ARENA_EXPIRED: Symbol = symbol_short!("A_EXP");
+
+const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
+const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
+const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
+
+const TIMELOCK_PERIOD: u64 = 48 * 60 * 60; // 48 hours
+
+const GAME_TTL_THRESHOLD: u32 = 17280; // 1 day
+const GAME_TTL_EXTEND_TO: u32 = 120960; // 7 days
+
 
 const EVENT_VERSION: u32 = 1;
 
@@ -173,12 +182,20 @@ pub enum ArenaState {
 
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ArenaStateChanged {
+    pub old_state: ArenaState,
+    pub new_state: ArenaState,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ArenaMetadata {
     pub arena_id: u64,
     pub name: String,
     pub description: Option<String>,
     pub host: Address,
     pub created_at: u64,
+    pub is_private: bool,
 }
 
 #[contracttype]
@@ -253,15 +270,11 @@ pub struct ArenaExpired {
 pub struct ArenaSnapshot {
     pub arena_id: u64,
     pub state: ArenaState,
-    pub current_round: u32,
-    pub round_deadline: u64,
-    pub total_players: u32,
-    pub survivors: Vec<Address>,
-    pub eliminated: Vec<Address>,
-    pub prize_pool: i128,
-    pub yield_earned: i128,
-    pub winner: Option<Address>,
-    pub config: ArenaConfig,
+    pub round_number: u32,
+    pub survivors_count: u32,
+    pub max_capacity: u32,
+    pub current_stake: i128,
+    pub potential_payout: i128,
 }
 
 macro_rules! assert_state {
@@ -285,15 +298,7 @@ pub struct FullStateView {
     pub has_won: bool,
 }
 
-#[contracttype]
-#[derive(Clone, Debug)]
-pub struct ArenaMetadata {
-    pub arena_id: u64,
-    pub name: String,
-    pub description: Option<String>,
-    pub host: Address,
-    pub created_at: u64,
-}
+
 
 #[contracttype]
 #[derive(Clone)]
@@ -465,6 +470,21 @@ impl ArenaContract {
             return Err(ArenaError::AlreadyCancelled);
         }
         let config = get_config(&env)?;
+        let arena_id = env.storage().instance().get(&DataKey::ArenaId).unwrap_or(0);
+        
+        if config.is_private {
+            if let Some(factory) = env.storage().instance().get::<_, Address>(&DataKey::FactoryAddress) {
+                let is_whitelisted = env.invoke_contract::<bool>(
+                    &factory,
+                    &soroban_sdk::Symbol::new(&env, "is_whitelisted"),
+                    soroban_sdk::vec![&env, arena_id.into_val(&env), player.clone().into_val(&env)],
+                );
+                if !is_whitelisted {
+                    return Err(ArenaError::NotWhitelisted);
+                }
+            }
+        }
+
         if amount != config.required_stake_amount {
             return Err(ArenaError::InvalidAmount);
         }
@@ -508,7 +528,7 @@ impl ArenaContract {
             .set(&DataKey::AllPlayers, &players);
         
         env.events().publish(
-            (TOPIC_PLAYER_JOINED, arena_id),
+            (TOPIC_PLAYER_JOINED,),
             PlayerJoined {
                 arena_id,
                 player: player.clone(),
@@ -1060,6 +1080,7 @@ impl ArenaContract {
             description,
             host,
             created_at: env.ledger().timestamp(),
+            is_private: get_config(&env).map(|c| c.is_private).unwrap_or(false),
         };
         env.storage()
             .persistent()
@@ -1335,6 +1356,28 @@ mod yield_share_tests {
         assert_eq!(client.claim(&winner), 350);
         assert_eq!(client.claim(&eliminated), 25);
     }
+}
+
+fn get_survivors(env: &Env) -> Vec<Address> {
+    let all_players: Vec<Address> = env.storage().persistent().get(&DataKey::AllPlayers).unwrap_or(Vec::new(env));
+    let mut survivors = Vec::new(env);
+    for p in all_players.iter() {
+        if env.storage().persistent().has(&DataKey::Survivor(p.clone())) {
+            survivors.push_back(p);
+        }
+    }
+    survivors
+}
+
+fn get_eliminated(env: &Env) -> Vec<Address> {
+    let all_players: Vec<Address> = env.storage().persistent().get(&DataKey::AllPlayers).unwrap_or(Vec::new(env));
+    let mut eliminated = Vec::new(env);
+    for p in all_players.iter() {
+        if env.storage().persistent().has(&DataKey::Eliminated(p.clone())) {
+            eliminated.push_back(p);
+        }
+    }
+    eliminated
 }
 
 #[cfg(test)]

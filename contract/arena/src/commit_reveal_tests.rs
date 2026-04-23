@@ -66,7 +66,7 @@ fn test_happy_path() {
     
     client.commit_choice(&player1, &1, &commitment);
     
-    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+    set_ledger_sequence(&env, round.commit_deadline_ledger + 1);
     
     client.reveal_choice(&player1, &1, &choice, &nonce);
     
@@ -87,7 +87,7 @@ fn test_reveal_without_commit() {
     client.join(&player2, &100);
     let round = client.start_round();
     
-    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+    set_ledger_sequence(&env, round.commit_deadline_ledger + 1);
     client.reveal_choice(&player1, &1, &Choice::Heads, &BytesN::from_array(&env, &[0; 32]));
 }
 
@@ -108,7 +108,7 @@ fn test_wrong_nonce_in_reveal() {
     
     client.commit_choice(&player1, &1, &commitment);
     
-    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+    set_ledger_sequence(&env, round.commit_deadline_ledger + 1);
     let wrong_nonce = BytesN::from_array(&env, &[2; 32]);
     client.reveal_choice(&player1, &1, &Choice::Heads, &wrong_nonce);
 }
@@ -130,7 +130,7 @@ fn test_wrong_choice_in_reveal() {
     
     client.commit_choice(&player1, &1, &commitment);
     
-    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+    set_ledger_sequence(&env, round.commit_deadline_ledger + 1);
     client.reveal_choice(&player1, &1, &Choice::Tails, &nonce);
 }
 
@@ -166,7 +166,7 @@ fn test_commit_after_deadline() {
     client.join(&player2, &100);
     let round = client.start_round();
     
-    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+    set_ledger_sequence(&env, round.commit_deadline_ledger + 1);
     client.commit_choice(&player1, &1, &BytesN::from_array(&env, &[0; 32]));
 }
 
@@ -214,7 +214,7 @@ fn test_reveal_another_player_commitment() {
     
     client.commit_choice(&player1, &1, &commitment);
     
-    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+    set_ledger_sequence(&env, round.commit_deadline_ledger + 1);
     
     client.reveal_choice(&player2, &1, &Choice::Heads, &nonce);
 }
@@ -240,7 +240,7 @@ fn test_two_players_same_round() {
     client.commit_choice(&player1, &1, &commit1);
     client.commit_choice(&player2, &1, &commit2);
     
-    set_ledger_sequence(&env, round.round_deadline_ledger + 1);
+    set_ledger_sequence(&env, round.commit_deadline_ledger + 1);
     
     client.reveal_choice(&player1, &1, &Choice::Heads, &nonce1);
     client.reveal_choice(&player2, &1, &Choice::Tails, &nonce2);
