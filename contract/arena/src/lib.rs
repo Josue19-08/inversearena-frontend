@@ -59,11 +59,13 @@ const TOPIC_ARENA_STARTED: Symbol = symbol_short!("A_START");
 const TOPIC_UPGRADE_PROPOSED: Symbol = symbol_short!("UP_PROP");
 const TOPIC_UPGRADE_EXECUTED: Symbol = symbol_short!("UP_EXEC");
 const TOPIC_UPGRADE_CANCELLED: Symbol = symbol_short!("UP_CANC");
+
 const TOPIC_YIELD_HARVESTED: Symbol = symbol_short!("Y_HARV");
 const TOPIC_VAULT_FALLBACK: Symbol = symbol_short!("V_FALL");
 const TOPIC_ADMIN_PROPOSED: Symbol = symbol_short!("AD_PROP");
 const TOPIC_ADMIN_ACCEPTED: Symbol = symbol_short!("AD_DONE");
 const TOPIC_ADMIN_CANCELLED: Symbol = symbol_short!("AD_CANC");
+
 const TOPIC_FUNDS_DEPOSITED: Symbol = symbol_short!("F_DEP");
 const EVENT_VERSION: u32 = 1;
 
@@ -361,6 +363,10 @@ macro_rules! assert_state {
     };
 }
 
+        }
+    };
+}
+
 /// Asserts that `$caller` equals the arena host stored in `CREATOR_KEY`.
 /// Returns `Err(ArenaError::Unauthorized)` if the check fails.
 macro_rules! assert_is_host {
@@ -593,6 +599,14 @@ impl ArenaContract {
         Ok(())
     }
 
+    pub fn set_max_rounds(env: Env, max_rounds: u32) -> Result<(), ArenaError> {
+        let admin = Self::admin(env.clone());
+        admin.require_auth();
+        if !(bounds::MIN_MAX_ROUNDS..=bounds::MAX_MAX_ROUNDS).contains(&max_rounds) {
+            return Err(ArenaError::InvalidMaxRounds);
+        }
+        let mut config = get_config(&env)?;
+        config.max_rounds = max_rounds;
     pub fn set_reserve_ratio_bps(env: Env, bps: u32) -> Result<(), ArenaError> {
         let admin = Self::admin(env.clone());
         admin.require_auth();
@@ -978,7 +992,7 @@ impl ArenaContract {
                 None => {}
             }
         }
-        let surviving_choice = choose_surviving_side(&env, heads, tails);
+        let resolution_outcome = choose_resolution_outcome(&env, heads, tails);
         let mut survivor_count = 0u32;
         let mut eliminated_count = 0u32;
         for player in players.iter() {
@@ -991,7 +1005,7 @@ impl ArenaContract {
                 round.round_number,
                 player.clone(),
             ));
-            let survives = surviving_choice.is_none() || player_choice == surviving_choice;
+            let survives = player_survives(resolution_outcome, player_choice);
             if survives {
                 survivor_count += 1;
             } else {
@@ -1127,7 +1141,8 @@ impl ArenaContract {
         }
 
         let mut round = get_round(&env)?;
-        let surviving_choice = choose_surviving_side(&env, state.heads_count, state.tails_count);
+        let resolution_outcome =
+            choose_resolution_outcome(&env, state.heads_count, state.tails_count);
 
         let players = all_players(&env);
         let mut survivor_count = 0u32;
@@ -1142,7 +1157,7 @@ impl ArenaContract {
                 state.round_number,
                 player.clone(),
             ));
-            let survives = surviving_choice.is_none() || player_choice == surviving_choice;
+            let survives = player_survives(resolution_outcome, player_choice);
             if survives {
                 survivor_count += 1;
             } else {
@@ -2020,20 +2035,38 @@ fn process_tally_batch(
     state.processed = end;
 }
 
-fn choose_surviving_side(env: &Env, heads: u32, tails: u32) -> Option<Choice> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResolutionOutcome {
+    AllSurvive,
+    SurvivingChoice(Choice),
+    AllEliminated,
+}
+
+fn choose_resolution_outcome(env: &Env, heads: u32, tails: u32) -> ResolutionOutcome {
     match (heads, tails) {
-        (0, 0) => None,
-        (0, _) => Some(Choice::Tails),
-        (_, 0) => Some(Choice::Heads),
+        // No submissions leave the arena unchanged so a keeper/admin can
+        // continue the game instead of forcing an artificial elimination.
+        (0, 0) => ResolutionOutcome::AllSurvive,
+        // If everyone piled onto the same side there is no meaningful
+        // minority. Treat it as a draw and eliminate the whole field.
+        (0, _) | (_, 0) => ResolutionOutcome::AllEliminated,
         _ if heads == tails => {
             if env.ledger().sequence() % 2 == 0 {
-                Some(Choice::Heads)
+                ResolutionOutcome::SurvivingChoice(Choice::Heads)
             } else {
-                Some(Choice::Tails)
+                ResolutionOutcome::SurvivingChoice(Choice::Tails)
             }
         }
-        _ if heads < tails => Some(Choice::Heads),
-        _ => Some(Choice::Tails),
+        _ if heads < tails => ResolutionOutcome::SurvivingChoice(Choice::Heads),
+        _ => ResolutionOutcome::SurvivingChoice(Choice::Tails),
+    }
+}
+
+fn player_survives(outcome: ResolutionOutcome, player_choice: Option<Choice>) -> bool {
+    match outcome {
+        ResolutionOutcome::AllSurvive => true,
+        ResolutionOutcome::AllEliminated => false,
+        ResolutionOutcome::SurvivingChoice(choice) => player_choice == Some(choice),
     }
 }
 
@@ -2197,17 +2230,6 @@ fn get_eliminated(env: &Env) -> Vec<Address> {
     eliminated
 }
 
-#[cfg(test)]
-// #[cfg(test)]
-// mod auto_advance_tests;
-// #[cfg(all(test, feature = "integration-tests"))]
-// mod integration_tests;
-// #[cfg(test)]
-// mod metadata_tests;
-// #[cfg(test)]
-// mod state_machine_tests;
-// #[cfg(test)]
-// mod submit_choice_tests;
 #[cfg(test)]
 mod commit_reveal_tests;
 #[cfg(test)]
