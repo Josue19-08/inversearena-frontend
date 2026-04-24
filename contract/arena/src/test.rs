@@ -3063,3 +3063,212 @@ fn set_max_rounds_accepts_boundary_values() {
     assert!(client.try_set_max_rounds(&bounds::MAX_MAX_ROUNDS).is_ok());
     assert!(client.try_set_max_rounds(&bounds::DEFAULT_MAX_ROUNDS).is_ok());
 }
+
+// ── Issue #480: batched round resolution ──────────────────────────────────────
+//
+// `resolve_round` does the entire tally + apply in one transaction, which can
+// blow Soroban's per-tx CPU budget for large arenas. The trio
+// `start_resolution` / `continue_resolution` / `finalize_resolution` lets a
+// caller spread the tally across several transactions while preserving the
+// exact same observable outcome.
+
+#[test]
+fn batched_resolution_matches_resolve_round_for_minority_survivors() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 3);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    client.submit_choice(&players[0], &1, &Choice::Heads);
+    client.submit_choice(&players[1], &1, &Choice::Tails);
+    client.submit_choice(&players[2], &1, &Choice::Tails);
+    set_ledger_sequence(&env, 100);
+
+    // Tally one player at a time to prove arbitrary batch sizes are safe.
+    let s0 = client.start_resolution(&1u32);
+    assert_eq!(s0.processed, 1);
+    assert_eq!(s0.total_players, 3);
+    let s1 = client.continue_resolution(&1u32);
+    assert_eq!(s1.processed, 2);
+    let s2 = client.continue_resolution(&1u32);
+    assert_eq!(s2.processed, 3);
+    assert_eq!(s2.total_players, s2.processed);
+
+    let resolved = client.finalize_resolution();
+    assert!(!resolved.active);
+    assert!(resolved.finished);
+    assert_eq!(client.get_arena_state().survivors_count, 1);
+    assert!(client.get_user_state(&players[0]).is_active);
+    assert!(!client.get_user_state(&players[1]).is_active);
+    assert!(!client.get_user_state(&players[2]).is_active);
+    // Batch state is cleared after finalisation.
+    assert!(client.pending_resolution().is_none());
+}
+
+#[test]
+fn batched_resolution_single_call_processes_all_when_batch_size_exceeds_total() {
+    // Acceptance criterion: single-call resolution still works for small
+    // arenas. start_resolution(BIG) tallies everyone; finalize then applies.
+    let (env, _admin, client, _token_id, players) = setup_game(5, 3);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    client.submit_choice(&players[0], &1, &Choice::Heads);
+    client.submit_choice(&players[1], &1, &Choice::Heads);
+    client.submit_choice(&players[2], &1, &Choice::Heads);
+    set_ledger_sequence(&env, 100);
+
+    let state = client.start_resolution(&64u32);
+    assert_eq!(state.processed, state.total_players);
+
+    let resolved = client.finalize_resolution();
+    assert!(resolved.finished);
+    assert_eq!(client.get_arena_state().survivors_count, 3);
+    for p in &players {
+        assert!(client.get_user_state(p).is_active);
+    }
+}
+
+#[test]
+fn finalize_resolution_panics_if_not_fully_processed() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 3);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    client.submit_choice(&players[0], &1, &Choice::Heads);
+    client.submit_choice(&players[1], &1, &Choice::Tails);
+    client.submit_choice(&players[2], &1, &Choice::Tails);
+    set_ledger_sequence(&env, 100);
+
+    client.start_resolution(&1u32); // only 1 of 3 processed
+    let err = client.try_finalize_resolution();
+    assert_eq!(err, Err(Ok(ArenaError::BatchNotComplete)));
+}
+
+#[test]
+fn start_resolution_rejects_double_start() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    client.submit_choice(&players[0], &1, &Choice::Heads);
+    client.submit_choice(&players[1], &1, &Choice::Tails);
+    set_ledger_sequence(&env, 100);
+
+    client.start_resolution(&1u32);
+    let err = client.try_start_resolution(&1u32);
+    assert_eq!(err, Err(Ok(ArenaError::BatchAlreadyInProgress)));
+}
+
+#[test]
+fn continue_resolution_rejects_when_no_batch_in_progress() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    client.submit_choice(&players[0], &1, &Choice::Heads);
+    client.submit_choice(&players[1], &1, &Choice::Tails);
+    set_ledger_sequence(&env, 100);
+
+    let err = client.try_continue_resolution(&1u32);
+    assert_eq!(err, Err(Ok(ArenaError::NoBatchInProgress)));
+
+    let err = client.try_finalize_resolution();
+    assert_eq!(err, Err(Ok(ArenaError::NoBatchInProgress)));
+}
+
+#[test]
+fn start_resolution_rejects_before_deadline_grace_elapses() {
+    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    client.submit_choice(&players[0], &1, &Choice::Heads);
+    client.submit_choice(&players[1], &1, &Choice::Tails);
+
+    // Round still open — same gating as resolve_round.
+    let err = client.try_start_resolution(&2u32);
+    assert_eq!(err, Err(Ok(ArenaError::RoundStillOpen)));
+}
+
+#[test]
+fn batched_resolution_4_batches_resolve_full_64_player_round() {
+    // Acceptance criterion: 64-player arena resolves across multiple
+    // (≤ 4) batches. Test bounds keep MAX_ARENA_PARTICIPANTS at 64.
+    let player_count: u32 = bounds::MAX_ARENA_PARTICIPANTS; // 64 in test cfg
+    let batch_size: u32 = 16;
+
+    let (env, _admin, client, _token_id, players) = setup_game(5, player_count);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    // First half pick Heads, second half pick Tails — minority survives.
+    let half = player_count as usize / 2;
+    for player in &players[..half] {
+        client.submit_choice(player, &1, &Choice::Heads);
+    }
+    for player in &players[half..] {
+        client.submit_choice(player, &1, &Choice::Tails);
+    }
+    set_ledger_sequence(&env, 100);
+
+    // Tally across exactly ceil(64/16) = 4 calls (1 start + 3 continues).
+    let s0 = client.start_resolution(&batch_size);
+    assert_eq!(s0.processed, 16);
+    assert_eq!(s0.total_players, 64);
+    for expected in [32u32, 48, 64] {
+        let s = client.continue_resolution(&batch_size);
+        assert_eq!(s.processed, expected);
+    }
+
+    // Finalize once the tally is complete.
+    let resolved = client.finalize_resolution();
+    assert!(resolved.finished);
+    // 32-32 tie → minority rule arbitrarily picks one side via PRNG; verify
+    // exactly half (32) survived regardless of which side won.
+    assert_eq!(client.get_arena_state().survivors_count, 32);
+    assert!(client.pending_resolution().is_none());
+}
+
+#[test]
+fn continue_resolution_after_complete_is_a_noop() {
+    // Calling continue_resolution after the tally is already complete must
+    // not error or advance the cursor — callers can safely retry.
+    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    client.submit_choice(&players[0], &1, &Choice::Heads);
+    client.submit_choice(&players[1], &1, &Choice::Tails);
+    set_ledger_sequence(&env, 100);
+
+    client.start_resolution(&64u32); // already exceeds total_players
+    let before = client.pending_resolution().unwrap();
+    let after = client.continue_resolution(&8u32);
+    assert_eq!(before, after);
+}
+
+#[test]
+fn batched_resolution_zero_batch_size_is_noop_not_error() {
+    // We deliberately omitted a dedicated `InvalidBatchSize` error variant
+    // (Soroban caps contracterror at 50 entries). batch_size == 0 is a
+    // benign no-op so that callers' degenerate inputs don't permanently
+    // wedge a round.
+    let (env, _admin, client, _token_id, players) = setup_game(5, 2);
+
+    set_ledger_sequence(&env, 10);
+    client.start_round();
+    client.submit_choice(&players[0], &1, &Choice::Heads);
+    client.submit_choice(&players[1], &1, &Choice::Tails);
+    set_ledger_sequence(&env, 100);
+
+    let s0 = client.start_resolution(&0u32);
+    assert_eq!(s0.processed, 0);
+    assert_eq!(s0.total_players, 2);
+
+    let s1 = client.continue_resolution(&0u32);
+    assert_eq!(s1.processed, 0);
+
+    // Caller advances with a real batch; finalisation succeeds.
+    client.continue_resolution(&8u32);
+    client.finalize_resolution();
+}
