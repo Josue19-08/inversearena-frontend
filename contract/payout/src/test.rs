@@ -6,7 +6,6 @@ use soroban_sdk::{
     token::{StellarAssetClient, TokenClient},
 };
 
-
 #[contract]
 pub struct MockFactoryContract;
 #[contractimpl]
@@ -22,13 +21,34 @@ impl MockFactoryContract {
     pub fn get_arena_ref(env: Env, arena_id: u64) -> ArenaRef {
         env.storage().instance().get(&arena_id).unwrap()
     }
+    pub fn current_fee_bps(_env: Env) -> u32 {
+        _env.storage().instance().get(&symbol_short!("FEE_BPS")).unwrap_or(0)
+    }
+    pub fn set_fee_bps(env: Env, bps: u32) {
+        env.storage().instance().set(&symbol_short!("FEE_BPS"), &bps);
+    }
+    pub fn get_arena(env: Env, arena_id: u32) -> Option<FactoryArenaMetadata> {
+        let fee: u32 = env.storage().instance().get(&symbol_short!("FEE_BPS")).unwrap_or(0);
+        let r: Option<ArenaRef> = env.storage().instance().get(&(arena_id as u64));
+        r.map(|a| FactoryArenaMetadata {
+            pool_id: arena_id,
+            creator: a.host,
+            capacity: 2,
+            stake_amount: 1,
+            win_fee_bps: fee,
+        })
+    }
 }
 
 const TIMELOCK: u64 = 48 * 60 * 60;
 
-
-
-fn setup() -> (Env, Address, PayoutContractClient<'static>, Address, MockFactoryContractClient<'static>) {
+fn setup() -> (
+    Env,
+    Address,
+    PayoutContractClient<'static>,
+    Address,
+    MockFactoryContractClient<'static>,
+) {
     let env = Env::default();
     env.mock_all_auths();
 
@@ -52,7 +72,7 @@ fn setup_with_token() -> (
     Address,
     Address,
     Address,
-    MockFactoryContractClient<'static>
+    MockFactoryContractClient<'static>,
 ) {
     let (env, admin, client, factory_id, factory_client) = setup();
 
@@ -66,7 +86,15 @@ fn setup_with_token() -> (
     let asset = StellarAssetClient::new(&env, &token_id);
     asset.mint(&client.address, &10_000i128);
 
-    (env, admin, client, token_id, treasury, factory_id, factory_client)
+    (
+        env,
+        admin,
+        client,
+        token_id,
+        treasury,
+        factory_id,
+        factory_client,
+    )
 }
 
 #[test]
@@ -99,7 +127,9 @@ fn test_admin_can_distribute_winnings() {
     {
         let caller = Address::generate(&env);
         factory_client.set_arena(&(pool_id as u64), &caller);
-        client.distribute_winnings(&caller, &ctx, &pool_id, &round_id, &winner, &amount, &currency)
+        client.distribute_winnings(
+            &caller, &ctx, &pool_id, &round_id, &winner, &amount, &currency,
+        )
     };
     assert!(client.is_payout_processed(&ctx, &pool_id, &round_id, &winner));
 
@@ -129,12 +159,13 @@ fn test_unauthorized_caller_cannot_distribute() {
     let result = {
         let caller = Address::generate(&env);
         // factory_client is not defined here, so we instantiate it
-        let factory_client = MockFactoryContractClient::new(&env, &env.register(MockFactoryContract, ()));
+        let factory_client =
+            MockFactoryContractClient::new(&env, &env.register(MockFactoryContract, ()));
         client.init_factory(&factory_client.address);
-        
+
         // Clear all mocked auths BEFORE trying to distribute, but AFTER init_factory which needs admin auth
         env.mock_auths(&[]);
-        
+
         factory_client.set_arena(&(1u32 as u64), &caller);
         client.try_distribute_winnings(&caller, &ctx, &1u32, &1u32, &winner, &1000i128, &currency)
     };
@@ -403,7 +434,9 @@ fn payout_record_survives_ttl_threshold() {
     {
         let caller = Address::generate(&env);
         factory_client.set_arena(&(pool_id as u64), &caller);
-        client.distribute_winnings(&caller, &ctx, &pool_id, &round_id, &winner, &amount, &currency)
+        client.distribute_winnings(
+            &caller, &ctx, &pool_id, &round_id, &winner, &amount, &currency,
+        )
     };
 
     // Advance ledger past PAYOUT_TTL_THRESHOLD (100_000) — record must still exist.
@@ -716,17 +749,16 @@ fn timelock_execute_with_wrong_hash_returns_hash_mismatch() {
     );
 }
 
-
 #[test]
 fn test_unauthorized_caller_attack_scenario() {
     let (env, _admin, client, _, factory_client) = setup();
     let attacker = Address::generate(&env);
     let ctx = symbol_short!("ATTACK");
     let pool_id = 1u32;
-    
+
     let valid_arena = Address::generate(&env);
     factory_client.set_arena(&(pool_id as u64), &valid_arena);
-    
+
     let result = client.try_distribute_winnings(
         &attacker,
         &ctx,
@@ -736,6 +768,58 @@ fn test_unauthorized_caller_attack_scenario() {
         &1000i128,
         &symbol_short!("XLM"),
     );
-    
+
     assert_eq!(result, Err(Ok(PayoutError::UnauthorizedCaller)));
+}
+
+#[test]
+fn win_fee_bps_cases_0_200_1000() {
+    let (env, _admin, client, token_id, _treasury, _factory_id, factory_client) = setup_with_token();
+    let currency = symbol_short!("USDC");
+    client.set_currency_token(&currency, &token_id);
+    let token = TokenClient::new(&env, &token_id);
+
+    let run_case = |pool_id: u32, bps: u32, amount: i128| {
+        let winner = Address::generate(&env);
+        let caller = Address::generate(&env);
+        factory_client.set_arena(&(pool_id as u64), &caller);
+        factory_client.set_fee_bps(&bps);
+        let before_winner = token.balance(&winner);
+        let before_factory = token.balance(&factory_client.address);
+        client.distribute_winnings(
+            &caller,
+            &symbol_short!("CTX"),
+            &pool_id,
+            &1u32,
+            &winner,
+            &amount,
+            &currency,
+        );
+        let fee = amount * (bps as i128) / 10_000;
+        assert_eq!(token.balance(&winner), before_winner + (amount - fee));
+        assert_eq!(token.balance(&factory_client.address), before_factory + fee);
+    };
+
+    run_case(10, 0, 1_000);
+    run_case(11, 200, 1_000);
+    run_case(12, 1_000, 1_000);
+}
+
+#[test]
+fn win_fee_overflow_guard_returns_error() {
+    let (env, _admin, client, _token_id, _treasury, _factory_id, factory_client) = setup_with_token();
+    let winner = Address::generate(&env);
+    let caller = Address::generate(&env);
+    factory_client.set_arena(&(99u32 as u64), &caller);
+    factory_client.set_fee_bps(&1_000);
+    let result = client.try_distribute_winnings(
+        &caller,
+        &symbol_short!("CTX"),
+        &99u32,
+        &1u32,
+        &winner,
+        &i128::MAX,
+        &symbol_short!("XLM"),
+    );
+    assert_eq!(result, Err(Ok(PayoutError::ArithmeticOverflow)));
 }
