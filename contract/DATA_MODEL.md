@@ -106,18 +106,20 @@ Primary source: `contract/payout/src/lib.rs`
 
 Persistent keys:
 
+- `CurrencyToken(symbol)`: symbol-to-token-address registry
 - `Payout(ctx, pool_id, round_id, winner)`: idempotent payout receipts
+- `PrizePayout(game_id)`: idempotency guard for prize payouts
 - `SplitPayout(arena_id, winner)`: per-winner split payout receipts
+- `SplitPayoutBatch(arena_id)`: batch idempotency guard
 - `PayoutHistory(index)`: append-only payout history
 - `ArenaPayout(arena_id)`: latest payout receipt keyed by arena
 
 Instance keys:
 
-- `ADMIN`, `P_ADMIN`, `A_EXP`, `TREAS`, `FACTORY`, `PAUSED`
+- `ADMIN`, `P_ADMIN`, `A_EXP`
 - `P_HASH`, `P_AFTER` for upgrade timelock
+- `TREAS`, `FACTORY`, `PAUSED`
 - `P_COUNT`: payout-history cursor
-- `CurrencyToken(symbol)`: symbol-to-token-address registry
-- `PrizePayout(game_id)`, `SplitPayoutBatch(arena_id)`: idempotency guards
 
 ### TTL policy
 
@@ -143,10 +145,14 @@ Primary source: `contract/staking/src/lib.rs`
 
 Persistent keys:
 
-- `Stake(address)` and `Position(address)`: staker balances and share positions
-- `HostLock(host, arena_id)` and `HostLockedTotal(host)`: host collateral locks
-- `RewardDebt(address)`, `PendingRewards(address)`, `StakedAt(address)`
-- `TotalClaimedRewards(address)`
+- `Position(address)`: staker share positions (amount + shares)
+- `Stake(address)`: staker balance snapshots
+- `HostLock(host, arena_id)`: host collateral locks per arena
+- `HostLockedTotal(host)`: total locked amount per host
+- `RewardDebt(address)`: reward debt tracking
+- `PendingRewards(address)`: accrued but unclaimed rewards
+- `StakedAt(address)`: stake timestamp for lock period calculation
+- `TotalClaimedRewards(address)`: cumulative claimed rewards per staker
 
 Instance keys:
 
@@ -160,14 +166,12 @@ Instance keys:
 
 | Storage class | Keys | Explicit bump? | Policy |
 | --- | --- | --- | --- |
-| Persistent | All staking `DataKey` entries | No | Relies on Soroban's default persistent TTL behavior |
+| Persistent | `Position`, `Stake`, `HostLock`, `HostLockedTotal`, `RewardDebt`, `PendingRewards`, `StakedAt`, `TotalClaimedRewards` | Yes, selectively | `HostLock` and `HostLockedTotal` entries are extended on write via `extend_staker_entry_ttl`; other entries rely on Soroban's default persistent TTL |
 | Instance | Config, totals, reward settings, governance state | No | Relies on Soroban instance TTL management |
 
 ### Rationale
 
-Staking stores long-lived balances and reward accounting, but today it does not
-refresh TTL explicitly. Operators should plan around Soroban TTL restoration for
-staking state if positions are expected to remain untouched for long periods.
+Staking stores long-lived balances and reward accounting. Host lock entries are explicitly TTL-bumped to ensure collateral remains available for arena operations. Other entries rely on standard TTL behavior, so operators should plan around TTL restoration for positions expected to remain untouched for extended periods.
 
 ## Shared Upgrade Timelock Flow
 

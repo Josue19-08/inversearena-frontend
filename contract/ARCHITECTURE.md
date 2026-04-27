@@ -13,7 +13,7 @@ It is meant to help:
 | --- | --- | --- |
 | `factory` | Pool creation and protocol administration | Maintains admin state, host whitelist, arena WASM hash, minimum stake rules, and emits pool creation events |
 | `arena` | Round lifecycle and game state | Stores round configuration, player submissions, timeout state, pause flag, admin controls, and upgrade timelock |
-| `staking` | Protocol staking | Intended to accept XLM staking deposits and track staker shares; currently still minimal in this repo |
+| `staking` | Protocol staking | Accepts staking deposits, tracks staker shares, locks host stake for arenas, and manages reward distribution |
 | `payout` | Winnings distribution | Records idempotent payout executions and exposes payout lookup helpers |
 | External token contracts | Asset movement | XLM SAC and token contracts used by frontend transaction builders for stake and pool-related flows |
 
@@ -150,8 +150,13 @@ Trust notes:
 
 ### Staking
 
-- The current contract is still a placeholder, so its final ownership model is not fully implemented yet.
-- Based on the architecture direction, it should define admin or operator authority explicitly before handling real funds.
+- Has its own `ADMIN` instance key.
+- The admin can:
+  - change admin
+  - set factory address (with handshake verification)
+  - configure lock period, min/max stake, and reward settings
+  - deposit rewards and manage reward pool
+  - propose, execute, and cancel upgrades through the timelock flow
 
 ## Authority Model Summary
 

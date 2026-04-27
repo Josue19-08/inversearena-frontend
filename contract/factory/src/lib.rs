@@ -188,6 +188,13 @@ const REGISTRY_TTL_EXTEND_TO: u32 = 535_680;
 
 const DEFAULT_MIN_STAKE: i128 = 10_000_000;
 
+// ── Join deadline bounds ────────────────────────────────────────────────────────
+
+/// Minimum buffer before `join_deadline` (1 hour in seconds).
+const MIN_JOIN_DEADLINE_BUFFER: u64 = 3600;
+/// Maximum horizon for `join_deadline` from now (7 days in seconds).
+const MAX_JOIN_DEADLINE_HORIZON: u64 = 604_800;
+
 // ── Round speed bounds (mirrored from arena for fail-fast validation) ────────
 
 /// Minimum `round_speed_in_ledgers` — 10 ledgers ≈ 50 s at mainnet ~5 s/ledger.
@@ -316,6 +323,10 @@ pub enum Error {
     InvalidRoundSpeed = 34,
     /// Player has reached the max concurrent arena participation limit.
     ParticipationLimitReached = 35,
+    /// `join_deadline` is in the past.
+    JoinDeadlineExpired = 36,
+    /// `join_deadline` exceeds the maximum allowed horizon.
+    JoinDeadlineTooFar = 37,
 }
 
 // ── Contract ──────────────────────────────────────────────────────────────────
@@ -1013,6 +1024,14 @@ impl FactoryContract {
 
         if round_speed < MIN_ROUND_SPEED_LEDGERS || round_speed > MAX_ROUND_SPEED_LEDGERS {
             return Err(Error::InvalidRoundSpeed);
+        }
+
+        let now = env.ledger().timestamp();
+        if join_deadline <= now + MIN_JOIN_DEADLINE_BUFFER {
+            return Err(Error::JoinDeadlineExpired);
+        }
+        if join_deadline > now + MAX_JOIN_DEADLINE_HORIZON {
+            return Err(Error::JoinDeadlineTooFar);
         }
 
         // Issue #449: host must have enough stake locked in staking contract.

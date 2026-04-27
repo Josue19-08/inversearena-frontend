@@ -167,11 +167,6 @@ pub struct StakingContract;
 
 #[contractimpl]
 impl StakingContract {
-    /// Placeholder function — returns a fixed value for contract liveness checks.
-    pub fn hello(_env: Env) -> u32 {
-        101112
-    }
-
     // ── Initialisation ───────────────────────────────────────────────────────
 
     /// Initialise the staking contract. Must be called exactly once after deployment.
