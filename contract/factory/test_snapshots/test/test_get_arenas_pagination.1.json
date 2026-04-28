@@ -1314,10 +1314,12 @@
                             },
                             {
                               "key": {
+                                "symbol": "round_deadline"
+
                                 "symbol": "round_deadline_ledger"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1362,6 +1364,9 @@
             },
             "ext": "v0"
           },
+          120960
+          1036800
+
           535680
         ]
       ],
@@ -1579,10 +1584,11 @@
                             },
                             {
                               "key": {
+                                "symbol": "round_deadline"
                                 "symbol": "round_deadline_ledger"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1627,6 +1633,10 @@
             },
             "ext": "v0"
           },
+          120960
+
+          1036800
+
           535680
         ]
       ],
@@ -1844,10 +1854,11 @@
                             },
                             {
                               "key": {
+                                "symbol": "round_deadline"
                                 "symbol": "round_deadline_ledger"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -1892,6 +1903,8 @@
             },
             "ext": "v0"
           },
+          120960
+          1036800
           535680
         ]
       ],
@@ -2109,10 +2122,11 @@
                             },
                             {
                               "key": {
+                                "symbol": "round_deadline"
                                 "symbol": "round_deadline_ledger"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -2157,6 +2171,8 @@
             },
             "ext": "v0"
           },
+          120960
+          1036800
           535680
         ]
       ],
@@ -2374,10 +2390,11 @@
                             },
                             {
                               "key": {
+                                "symbol": "round_deadline"
                                 "symbol": "round_deadline_ledger"
                               },
                               "val": {
-                                "u32": 0
+                                "u64": 0
                               }
                             },
                             {
@@ -2422,6 +2439,9 @@
             },
             "ext": "v0"
           },
+          120960
+
+          1036800
           535680
         ]
       ],
@@ -2443,6 +2463,9 @@
             },
             "ext": "v0"
           },
+          120960
+
+          1036800
           535680
         ]
       ]
