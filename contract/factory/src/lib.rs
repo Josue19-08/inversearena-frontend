@@ -47,6 +47,7 @@ const MIN_HOST_STAKE_KEY: Symbol = symbol_short!("HST_MIN");
 const PARTICIPATION_LIMIT_KEY: Symbol = symbol_short!("P_LIM");
 const PLAYER_PARTICIPATION_KEY: Symbol = symbol_short!("P_PAR");
 const TOTAL_ARENAS_CREATED_KEY: Symbol = symbol_short!("T_ARNA");
+const PLATFORM_STATS_KEY: Symbol = symbol_short!("PLT_STS");
 
 pub const DEFAULT_MAX_CONCURRENT_ARENAS: u32 = 3;
 
@@ -176,6 +177,17 @@ pub struct PlayerStats {
     pub total_entry_fees_paid: i128,
     pub total_winnings: i128,
     pub win_rate_bps: u32,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, PartialEq)]
+pub struct PlatformStats {
+    pub total_arenas_created: u64,
+    pub total_arenas_active: u32,
+    pub total_arenas_completed: u32,
+    pub total_prize_volume: i128,
+    pub total_fees_collected: i128,
+    pub total_players_all_time: u64,
 }
 
 // ── Timelock constant: 48 hours in seconds ────────────────────────────────────
@@ -718,6 +730,11 @@ impl FactoryContract {
             .unwrap_or(0u32)
     }
 
+    /// Return protocol-wide aggregate statistics. No auth required.
+    pub fn get_platform_stats(env: Env) -> PlatformStats {
+        load_platform_stats(&env)
+    }
+
     // ── Fee timelock ──────────────────────────────────────────────────────────
 
     /// Return the current effective platform win fee in basis points.
@@ -901,6 +918,10 @@ impl FactoryContract {
             .checked_add(amount)
             .ok_or(Error::ArithmeticOverflow)?;
         env.storage().instance().set(&WIN_FEE_ACCUM_KEY, &next);
+
+        let mut stats = load_platform_stats(&env);
+        stats.total_fees_collected = stats.total_fees_collected.saturating_add(amount);
+        save_platform_stats(&env, &stats);
         Ok(())
     }
 
@@ -1063,6 +1084,12 @@ impl FactoryContract {
             env.storage()
                 .instance()
                 .set(&CREATION_FEE_ACCUM_KEY, &(prev_acc + creation_fee));
+
+            let mut stats = load_platform_stats(&env);
+            stats.total_fees_collected = stats
+                .total_fees_collected
+                .saturating_add(creation_fee);
+            save_platform_stats(&env, &stats);
         }
 
         let wasm_hash: BytesN<32> = env
@@ -1195,6 +1222,10 @@ impl FactoryContract {
         env.storage()
             .instance()
             .set(&TOTAL_ARENAS_CREATED_KEY, &(total + 1));
+
+        let mut stats = load_platform_stats(&env);
+        stats.total_arenas_created = stats.total_arenas_created.saturating_add(1);
+        save_platform_stats(&env, &stats);
 
         env.events().publish(
             (TOPIC_POOL_CREATED,),
@@ -1429,6 +1460,7 @@ impl FactoryContract {
         // Enforce that only the corresponding ArenaContract can update its status.
         arena_ref.contract.require_auth();
 
+        let old_status = arena_ref.status.clone();
         arena_ref.status = status;
         env.storage().persistent().set(&ref_key, &arena_ref);
         env.storage().persistent().extend_ttl(
@@ -1436,6 +1468,22 @@ impl FactoryContract {
             REGISTRY_TTL_THRESHOLD,
             REGISTRY_TTL_EXTEND_TO,
         );
+
+        // Update platform stats based on state transitions.
+        {
+            let mut pstats = load_platform_stats(&env);
+            if status == ArenaStatus::Active && old_status != ArenaStatus::Active {
+                pstats.total_arenas_active = pstats.total_arenas_active.saturating_add(1);
+            } else if (status == ArenaStatus::Completed || status == ArenaStatus::Cancelled)
+                && old_status == ArenaStatus::Active
+            {
+                pstats.total_arenas_active = pstats.total_arenas_active.saturating_sub(1);
+            }
+            if status == ArenaStatus::Completed {
+                pstats.total_arenas_completed = pstats.total_arenas_completed.saturating_add(1);
+            }
+            save_platform_stats(&env, &pstats);
+        }
 
         // Update player stats on arena completion.
         if status == ArenaStatus::Completed || status == ArenaStatus::Cancelled {
@@ -1446,9 +1494,18 @@ impl FactoryContract {
                 .get(&DataKey::Pool(arena_id as u32));
             let entry_fee = arena_meta.map(|m| m.stake_amount).unwrap_or(0i128);
 
+            let player_count = players.len() as u64;
             for player in players.iter() {
                 // Record arena entry for all participants.
                 Self::record_arena_entry(env.clone(), player.clone(), entry_fee);
+            }
+
+            // Update players-all-time counter.
+            {
+                let mut pstats = load_platform_stats(&env);
+                pstats.total_players_all_time =
+                    pstats.total_players_all_time.saturating_add(player_count);
+                save_platform_stats(&env, &pstats);
             }
 
             // Record win for winner.
@@ -1466,6 +1523,10 @@ impl FactoryContract {
                 {
                     let total_prize = meta.stake_amount * (meta.capacity as i128);
                     Self::record_arena_win(env.clone(), winner_addr.clone(), total_prize, 1u32);
+                    let mut pstats = load_platform_stats(&env);
+                    pstats.total_prize_volume =
+                        pstats.total_prize_volume.saturating_add(total_prize);
+                    save_platform_stats(&env, &pstats);
                 }
             }
 
@@ -1870,6 +1931,24 @@ fn require_not_paused(env: &Env) -> Result<(), Error> {
         return Err(Error::Paused);
     }
     Ok(())
+}
+
+fn load_platform_stats(env: &Env) -> PlatformStats {
+    env.storage()
+        .instance()
+        .get(&PLATFORM_STATS_KEY)
+        .unwrap_or(PlatformStats {
+            total_arenas_created: 0,
+            total_arenas_active: 0,
+            total_arenas_completed: 0,
+            total_prize_volume: 0,
+            total_fees_collected: 0,
+            total_players_all_time: 0,
+        })
+}
+
+fn save_platform_stats(env: &Env, stats: &PlatformStats) {
+    env.storage().instance().set(&PLATFORM_STATS_KEY, stats);
 }
 
 fn list_arenas_filtered(

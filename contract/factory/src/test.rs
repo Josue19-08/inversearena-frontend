@@ -2494,3 +2494,152 @@ fn admin_can_update_max_concurrent_arenas() {
     client.set_max_concurrent_arenas(&new_limit);
     assert_eq!(client.get_max_concurrent_arenas(), new_limit);
 }
+
+// ── Platform stats tests ─────────────────────────────────────────────────────
+
+fn inject_platform_stats(env: &Env, contract_id: &Address, stats: &PlatformStats) {
+    env.as_contract(contract_id, || {
+        env.storage().instance().set(&PLATFORM_STATS_KEY, stats);
+    });
+}
+
+#[test]
+fn platform_stats_zero_on_fresh_contract() {
+    let (_env, _admin, client) = setup();
+    let stats = client.get_platform_stats();
+    assert_eq!(stats.total_arenas_created, 0);
+    assert_eq!(stats.total_arenas_active, 0);
+    assert_eq!(stats.total_arenas_completed, 0);
+    assert_eq!(stats.total_prize_volume, 0);
+    assert_eq!(stats.total_fees_collected, 0);
+    assert_eq!(stats.total_players_all_time, 0);
+}
+
+#[test]
+fn platform_stats_arenas_created_after_one() {
+    let (env, _admin, client) = setup();
+    inject_platform_stats(
+        &env,
+        &client.address,
+        &PlatformStats {
+            total_arenas_created: 1,
+            total_arenas_active: 0,
+            total_arenas_completed: 0,
+            total_prize_volume: 0,
+            total_fees_collected: 0,
+            total_players_all_time: 0,
+        },
+    );
+    let stats = client.get_platform_stats();
+    assert_eq!(stats.total_arenas_created, 1);
+}
+
+#[test]
+fn platform_stats_arenas_created_after_five() {
+    let (env, _admin, client) = setup();
+    inject_platform_stats(
+        &env,
+        &client.address,
+        &PlatformStats {
+            total_arenas_created: 5,
+            total_arenas_active: 2,
+            total_arenas_completed: 3,
+            total_prize_volume: 1_000_000,
+            total_fees_collected: 50_000,
+            total_players_all_time: 40,
+        },
+    );
+    let stats = client.get_platform_stats();
+    assert_eq!(stats.total_arenas_created, 5);
+    assert_eq!(stats.total_arenas_active, 2);
+    assert_eq!(stats.total_arenas_completed, 3);
+    assert_eq!(stats.total_prize_volume, 1_000_000);
+    assert_eq!(stats.total_fees_collected, 50_000);
+    assert_eq!(stats.total_players_all_time, 40);
+}
+
+#[test]
+fn platform_stats_active_increments_on_activation() {
+    let (env, _admin, client) = setup();
+    let arena_id: u64 = 0;
+    let arena_addr = Address::generate(&env);
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &DataKey::ArenaRef(arena_id),
+            &ArenaRef {
+                contract: arena_addr.clone(),
+                status: ArenaStatus::Pending,
+                host: Address::generate(&env),
+            },
+        );
+    });
+
+    client.update_arena_status(
+        &arena_id,
+        &ArenaStatus::Active,
+        &None,
+        &soroban_sdk::vec![&env],
+    );
+
+    let stats = client.get_platform_stats();
+    assert_eq!(stats.total_arenas_active, 1);
+    assert_eq!(stats.total_arenas_completed, 0);
+}
+
+#[test]
+fn platform_stats_completed_decrements_active_and_counts_players() {
+    let (env, _admin, client) = setup();
+    let arena_id: u64 = 1;
+    let arena_addr = Address::generate(&env);
+
+    inject_platform_stats(
+        &env,
+        &client.address,
+        &PlatformStats {
+            total_arenas_created: 1,
+            total_arenas_active: 1,
+            total_arenas_completed: 0,
+            total_prize_volume: 0,
+            total_fees_collected: 0,
+            total_players_all_time: 0,
+        },
+    );
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &DataKey::ArenaRef(arena_id),
+            &ArenaRef {
+                contract: arena_addr.clone(),
+                status: ArenaStatus::Active,
+                host: Address::generate(&env),
+            },
+        );
+    });
+
+    let player1 = Address::generate(&env);
+    let player2 = Address::generate(&env);
+    let players = soroban_sdk::vec![&env, player1.clone(), player2.clone()];
+
+    client.update_arena_status(
+        &arena_id,
+        &ArenaStatus::Completed,
+        &Some(player1.clone()),
+        &players,
+    );
+
+    let stats = client.get_platform_stats();
+    assert_eq!(stats.total_arenas_active, 0);
+    assert_eq!(stats.total_arenas_completed, 1);
+    assert_eq!(stats.total_players_all_time, 2);
+}
+
+#[test]
+fn platform_stats_fees_collected_via_record_win_fee() {
+    let (_env, _admin, client) = setup();
+    assert_eq!(client.get_platform_stats().total_fees_collected, 0);
+
+    client.record_win_fee(&500_000i128);
+    assert_eq!(client.get_platform_stats().total_fees_collected, 500_000);
+
+    client.record_win_fee(&200_000i128);
+    assert_eq!(client.get_platform_stats().total_fees_collected, 700_000);
+}

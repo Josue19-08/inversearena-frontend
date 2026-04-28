@@ -4,7 +4,6 @@
     "nonce": 0
   },
   "auth": [
-    [],
     [
       [
         "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
@@ -12,7 +11,7 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAFCT4",
-              "function_name": "initialize",
+              "function_name": "__constructor",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
@@ -140,6 +139,17 @@
                       },
                       {
                         "key": {
+                          "symbol": "HST_MIN"
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 10000000
+                          }
+                        }
+                      },
+                      {
+                        "key": {
                           "symbol": "MIN_STK"
                         },
                         "val": {
@@ -155,6 +165,25 @@
                         },
                         "val": {
                           "u32": 1
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "TOK_CNT"
+                        },
+                        "val": {
+                          "u32": 0
+                        }
+                      },
+                      {
+                        "key": {
+                          "symbol": "WIN_ACC"
+                        },
+                        "val": {
+                          "i128": {
+                            "hi": 0,
+                            "lo": 0
+                          }
                         }
                       }
                     ]
