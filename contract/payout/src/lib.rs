@@ -158,12 +158,6 @@ pub struct PayoutContract;
 
 #[contractimpl]
 impl PayoutContract {
-    /// Placeholder function — returns a fixed value for contract liveness checks.
-
-    pub fn hello(_env: Env) -> u32 {
-        789
-    }
-
     pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
         env.storage().instance().set(&ADMIN_KEY, &admin);
@@ -401,10 +395,8 @@ impl PayoutContract {
     /// * `NoWinners`      — `winners` is empty.
     /// * `TreasuryNotSet` — no treasury address registered.
     /// * `Paused`         — contract is paused.
-    #[deprecated(
-        note = "Use `distribute_split_payout` instead; \
-                see the function doc comment for the migration guide."
-    )]
+    #[deprecated(note = "Use `distribute_split_payout` instead; \
+                see the function doc comment for the migration guide.")]
     pub fn distribute_prize(
         env: Env,
         game_id: u32,

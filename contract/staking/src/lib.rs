@@ -1,7 +1,7 @@
 #![no_std]
 
 use soroban_sdk::{
-    Address, BytesN, Env, Symbol, contract, contracterror, contractclient, contractimpl,
+    Address, BytesN, Env, Symbol, contract, contractclient, contracterror, contractimpl,
     contracttype, panic_with_error, symbol_short, token,
 };
 
@@ -444,9 +444,11 @@ impl StakingContract {
             return Ok(());
         }
         env.storage().persistent().set(&lock_key, &amount);
-        env.storage()
-            .persistent()
-            .extend_ttl(&lock_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &lock_key,
+            STAKING_TTL_THRESHOLD,
+            STAKING_TTL_EXTEND_TO,
+        );
         let current_locked: i128 = env
             .storage()
             .persistent()
@@ -456,9 +458,11 @@ impl StakingContract {
         env.storage()
             .persistent()
             .set(&locked_total_key, &(current_locked + amount));
-        env.storage()
-            .persistent()
-            .extend_ttl(&locked_total_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &locked_total_key,
+            STAKING_TTL_THRESHOLD,
+            STAKING_TTL_EXTEND_TO,
+        );
         Ok(())
     }
 
@@ -789,9 +793,11 @@ impl StakingContract {
             .instance()
             .set(&REWARD_POOL_KEY, &pool.saturating_sub(claimable));
         env.storage().persistent().set(&claim_key, &0i128);
-        env.storage()
-            .persistent()
-            .extend_ttl(&claim_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &claim_key,
+            STAKING_TTL_THRESHOLD,
+            STAKING_TTL_EXTEND_TO,
+        );
 
         let total_claimed_key = DataKey::TotalClaimedRewards(staker.clone());
         let total_claimed: i128 = env
@@ -802,9 +808,11 @@ impl StakingContract {
         env.storage()
             .persistent()
             .set(&total_claimed_key, &(total_claimed + claimable));
-        env.storage()
-            .persistent()
-            .extend_ttl(&total_claimed_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+        env.storage().persistent().extend_ttl(
+            &total_claimed_key,
+            STAKING_TTL_THRESHOLD,
+            STAKING_TTL_EXTEND_TO,
+        );
 
         token::Client::new(&env, &token_contract).transfer(
             &env.current_contract_address(),
@@ -1042,9 +1050,11 @@ fn extend_staker_entry_ttl(env: &Env, staker: &Address) {
         ($key:expr) => {
             let k = $key;
             if env.storage().persistent().has(&k) {
-                env.storage()
-                    .persistent()
-                    .extend_ttl(&k, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+                env.storage().persistent().extend_ttl(
+                    &k,
+                    STAKING_TTL_THRESHOLD,
+                    STAKING_TTL_EXTEND_TO,
+                );
             }
         };
     }
@@ -1103,9 +1113,11 @@ fn accrue_rewards(
     let pending = pending_rewards_of(env, staker, position);
     let pending_key = DataKey::PendingRewards(staker.clone());
     env.storage().persistent().set(&pending_key, &pending);
-    env.storage()
-        .persistent()
-        .extend_ttl(&pending_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+    env.storage().persistent().extend_ttl(
+        &pending_key,
+        STAKING_TTL_THRESHOLD,
+        STAKING_TTL_EXTEND_TO,
+    );
     sync_reward_debt(env, staker)?;
     Ok(())
 }
@@ -1134,9 +1146,11 @@ fn sync_reward_debt(env: &Env, staker: &Address) -> Result<(), StakingError> {
     env.storage()
         .persistent()
         .set(&reward_debt_key, &reward_per_share);
-    env.storage()
-        .persistent()
-        .extend_ttl(&reward_debt_key, STAKING_TTL_THRESHOLD, STAKING_TTL_EXTEND_TO);
+    env.storage().persistent().extend_ttl(
+        &reward_debt_key,
+        STAKING_TTL_THRESHOLD,
+        STAKING_TTL_EXTEND_TO,
+    );
     Ok(())
 }
 

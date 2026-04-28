@@ -52,6 +52,13 @@ address, amounts) is in the data payload so indexers can filter on `STAKED` /
 
 ## Payout Contract
 
+> **Version policy:** Payout events do not include a `v` version field in the
+> data payload (unlike arena/factory events). The `TOK_SET` event is the sole
+> exception — it carries `v: u32` as its first field. If the payload schema of
+> any payout event changes, the version will be added as the **last** field and
+> this table will be updated. Indexers should treat a missing `v` field as
+> version 1.
+
 | Topic    | Emitting Function            | Data Fields                                                               |
 |----------|------------------------------|---------------------------------------------------------------------------|
 | `PAYOUT` | `distribute_winnings()`      | `(winner: Address, winner_amount: i128, fee_amount: i128, currency: Symbol)` |
